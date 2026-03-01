@@ -1,0 +1,39 @@
+{
+	"name": "parallax-cli",
+	"version": "1.0.0",
+	"description": "A CLI tool powered by Ink",
+	"main": "dist/index.js",
+	"bin": {
+		"parallax": "dist/index.js"
+	},
+	"scripts": {
+		"dev": "tsx index.tsx",
+		"build": "tsc",
+		"start": "node dist/index.js"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/eduardosilveiradev/parallax-cli.git"
+	},
+	"keywords": [],
+	"author": "",
+	"license": "ISC",
+	"type": "module",
+	"bugs": {
+		"url": "https://github.com/eduardosilveiradev/parallax-cli/issues"
+	},
+	"homepage": "https://github.com/eduardosilveiradev/parallax-cli#readme",
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.27.1",
+		"ink": "^6.8.0",
+		"react": "^19.2.4"
+	},
+	"devDependencies": {
+		"@tsconfig/node-lts": "^24.0.0",
+		"@types/node": "^25.3.3",
+		"@types/react": "^19.2.14",
+		"ts-node": "^10.9.2",
+		"tsx": "^4.21.0",
+		"typescript": "^5.9.3"
+	}
+}
