@@ -1,6 +1,9 @@
 #!/usr/bin/env node
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import { render, Box, Text, useInput, useApp } from "ink";
+import { marked } from "marked";
+import { markedTerminal } from "marked-terminal";
+import chalk from "chalk";
 import { runAgent, type AgentEvent, type ChatMessage } from "./agent.js";
 import {
     connectToServer,
@@ -8,6 +11,37 @@ import {
     type MCPServerConfig,
     type MCPConnection,
 } from "./mcp-client.js";
+
+// ── Markdown renderer (grayscale theme) ────────────────────────
+
+marked.use(
+    markedTerminal({
+        // Grayscale: no colors, just weight and dimness
+        code: chalk.white,
+        blockquote: chalk.gray.italic,
+        html: chalk.gray,
+        heading: chalk.white.bold,
+        firstHeading: chalk.white.bold.underline,
+        hr: chalk.gray,
+        listitem: chalk.reset,
+        table: chalk.reset,
+        paragraph: chalk.reset,
+        strong: chalk.bold,
+        em: chalk.italic,
+        codespan: chalk.white,
+        del: chalk.dim.strikethrough,
+        link: chalk.underline,
+        href: chalk.underline,
+        reflowText: true,
+        showSectionPrefix: false,
+        width: Math.min(process.stdout.columns ?? 100, 120) - 20,
+    }),
+);
+
+function renderMarkdown(text: string): string {
+    // marked returns string with trailing newlines — trim them
+    return (marked.parse(text) as string).trimEnd();
+}
 
 // ── Config ─────────────────────────────────────────────────────
 
@@ -35,10 +69,14 @@ const MCP_SERVER_CONFIGS: MCPServerConfig[] = (() => {
 
 // ── Types ──────────────────────────────────────────────────────
 
-interface DisplayMessage {
-    role: "user" | "assistant";
-    content: string;
+interface ToolActivity {
+    name: string;
+    result?: string;
 }
+
+type DisplayMessage =
+    | { type: "chat"; role: "user" | "assistant"; content: string }
+    | { type: "tools"; activities: ToolActivity[] };
 
 // ── Components ─────────────────────────────────────────────────
 
@@ -57,14 +95,29 @@ function Header() {
 }
 
 function MessageRow({ msg }: { msg: DisplayMessage }) {
+    if (msg.type === "tools") {
+        return (
+            <Box flexDirection="column" marginY={0}>
+                {msg.activities.map((t, i) => (
+                    <ToolBadge key={i} name={t.name} result={t.result} />
+                ))}
+            </Box>
+        );
+    }
+
     const isAI = msg.role === "assistant";
+    const rendered = useMemo(
+        () => (isAI ? renderMarkdown(msg.content) : msg.content),
+        [msg.content, isAI],
+    );
+
     return (
         <Box flexDirection="row" paddingX={2} marginY={0}>
             <Text bold={isAI} dimColor={!isAI}>
                 {isAI ? "  assistant " : "        you "}
             </Text>
             <Text dimColor> │ </Text>
-            <Text wrap="wrap" dimColor={!isAI}>{msg.content}</Text>
+            <Text wrap="wrap" dimColor={!isAI}>{rendered}</Text>
         </Box>
     );
 }
@@ -137,12 +190,7 @@ function InputLine({ value, disabled }: { value: string; disabled: boolean }) {
 
 // ── App ────────────────────────────────────────────────────────
 
-interface ToolActivity {
-    name: string;
-    result?: string;
-}
-
-function App() {
+function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
     const { exit } = useApp();
     const [messages, setMessages] = useState<DisplayMessage[]>([]);
     const [input, setInput] = useState("");
@@ -156,49 +204,9 @@ function App() {
     // Maintain ChatMessage history for the agent (includes system/tool msgs)
     const agentHistory = useRef<ChatMessage[]>([]);
 
-    // MCP connections, initialized on mount
-    const mcpConns = useRef<MCPConnection[]>([]);
-    const [mcpReady, setMcpReady] = useState(MCP_SERVER_CONFIGS.length === 0);
-
-    // Connect to MCP servers on mount
-    useEffect(() => {
-        if (MCP_SERVER_CONFIGS.length === 0) return;
-
-        let cancelled = false;
-
-        (async () => {
-            const connections: MCPConnection[] = [];
-
-            for (const config of MCP_SERVER_CONFIGS) {
-                if (cancelled) break;
-                try {
-                    const conn = await connectToServer(config, (msg) => {
-                        if (!cancelled) setMcpStatus(msg);
-                    });
-                    connections.push(conn);
-                } catch (err: any) {
-                    if (!cancelled) {
-                        setError(`mcp: ${config.name} — ${err.message}`);
-                    }
-                }
-            }
-
-            if (!cancelled) {
-                mcpConns.current = connections;
-                setMcpStatus(null);
-                setMcpReady(true);
-            }
-        })();
-
-        return () => {
-            cancelled = true;
-            mcpConns.current.forEach((c) => disconnectServer(c));
-        };
-    }, []);
-
     const sendMessage = async (text: string) => {
         // Show user message immediately
-        setMessages((prev) => [...prev, { role: "user", content: text }]);
+        setMessages((prev) => [...prev, { type: "chat", role: "user", content: text }]);
         setBusy(true);
         setStreamContent("");
         setStatus(null);
@@ -206,8 +214,11 @@ function App() {
         setTools([]);
         setError(null);
 
+        // Track tools locally (avoids stale React state in async closure)
+        let toolsAccum: ToolActivity[] = [];
+
         try {
-            const gen = runAgent(text, agentHistory.current, mcpConns.current);
+            const gen = runAgent(text, agentHistory.current, mcpConnections);
             let fullResponse = "";
 
             for await (const event of gen) {
@@ -219,23 +230,21 @@ function App() {
                     case "token":
                         fullResponse += event.content;
                         setStreamContent(fullResponse);
-                        // Clear status once tokens start flowing
                         setStatus(null);
                         break;
 
                     case "tool_start":
-                        setTools((prev) => [...prev, { name: event.name }]);
+                        toolsAccum.push({ name: event.name });
+                        setTools([...toolsAccum]);
                         break;
 
                     case "tool_result":
-                        setTools((prev) =>
-                            prev.map((t) =>
-                                t.name === event.name && !t.result
-                                    ? { ...t, result: event.result }
-                                    : t,
-                            ),
+                        toolsAccum = toolsAccum.map((t) =>
+                            t.name === event.name && !t.result
+                                ? { ...t, result: event.result }
+                                : t,
                         );
-                        // Reset stream content between tool iterations
+                        setTools([...toolsAccum]);
                         fullResponse = "";
                         setStreamContent("");
                         break;
@@ -249,14 +258,18 @@ function App() {
                         break;
 
                     case "done":
-                        // Append final assistant message to display history
-                        if (event.fullResponse) {
-                            setMessages((prev) => [
-                                ...prev,
-                                { role: "assistant", content: event.fullResponse },
-                            ]);
-                        }
-                        // Update agent history for multi-turn context
+                        // Persist tool badges + assistant message in correct order
+                        setMessages((prev) => {
+                            const next = [...prev];
+                            if (toolsAccum.length > 0) {
+                                next.push({ type: "tools", activities: toolsAccum });
+                            }
+                            if (event.fullResponse) {
+                                next.push({ type: "chat", role: "assistant", content: event.fullResponse });
+                            }
+                            return next;
+                        });
+                        setTools([]);
                         agentHistory.current = [
                             ...agentHistory.current,
                             { role: "user", content: text },
@@ -276,6 +289,8 @@ function App() {
 
     useInput((ch, key) => {
         if (key.escape || (key.ctrl && ch === "c")) {
+            // Kill MCP child processes so Node can exit cleanly
+            mcpConnections.forEach((c) => disconnectServer(c));
             exit();
             return;
         }
@@ -308,18 +323,14 @@ function App() {
             <Box flexDirection="column" marginY={1} paddingY={1}>
                 {messages.length === 0 && !busy && (
                     <Box paddingX={4}>
-                        <Text dimColor>
-                            {mcpReady
-                                ? "waiting for input"
-                                : "connecting to mcp servers…"}
-                        </Text>
+                        <Text dimColor>waiting for input</Text>
                     </Box>
                 )}
                 {messages.map((msg, i) => (
                     <MessageRow key={i} msg={msg} />
                 ))}
 
-                {/* Tool activity badges */}
+                {/* Tool activity badges (above streaming response) */}
                 {tools.length > 0 && (
                     <Box flexDirection="column" marginY={1}>
                         {tools.map((t, i) => (
@@ -332,7 +343,7 @@ function App() {
                 <StatusLine status={status} />
                 <StatusLine status={mcpStatus} />
 
-                {/* Streaming response */}
+                {/* Streaming response (below tools) */}
                 {busy && streamContent && (
                     <StreamingRow content={streamContent} />
                 )}
@@ -349,8 +360,8 @@ function App() {
                     <Text bold dimColor>enter</Text> send
                 </Text>
                 <Text dimColor>
-                    {mcpConns.current.length > 0
-                        ? `${mcpConns.current.length} mcp · `
+                    {mcpConnections.length > 0
+                        ? `${mcpConnections.length} mcp · `
                         : ""}
                     <Text bold dimColor>esc</Text> quit
                 </Text>
@@ -359,4 +370,27 @@ function App() {
     );
 }
 
-render(<App />);
+// ── Bootstrap ────────────────────────────────────────────
+// Connect to MCP servers BEFORE mounting the TUI.
+
+async function main() {
+    const connections: MCPConnection[] = [];
+
+    for (const config of MCP_SERVER_CONFIGS) {
+        try {
+            process.stderr.write(`│ connecting to ${config.name}\u2026\r`);
+            const conn = await connectToServer(config, (msg) => {
+                process.stderr.write(`│ ${msg}\r`);
+            });
+            connections.push(conn);
+            process.stderr.write(`│ ✓ ${config.name} (${conn.tools.length} tools)${" ".repeat(15)}\n`);
+        } catch (err: any) {
+            process.stderr.write(`│ ✗ ${config.name}: ${err.message}\n`);
+        }
+    }
+
+    process.stderr.write(`\n`);
+    render(<App mcpConnections={connections} />);
+}
+
+main();

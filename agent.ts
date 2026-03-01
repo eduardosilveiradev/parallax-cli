@@ -49,11 +49,11 @@ export interface ChatMessage {
 }
 
 interface ToolCall {
-    id: string;
-    type: "function";
+    id?: string;
+    type?: "function";
     function: {
         name: string;
-        arguments: string; // JSON-encoded args
+        arguments: Record<string, unknown> | string; // Ollama sends object, OpenAI sends JSON string
     };
 }
 
@@ -487,10 +487,18 @@ export async function* runAgent(
         });
 
         for (const call of toolCalls) {
+            // Ollama sends arguments as an object; OpenAI sends as a JSON string
             let args: Record<string, unknown>;
-            try {
-                args = JSON.parse(call.function.arguments);
-            } catch {
+            const rawArgs = call.function.arguments;
+            if (typeof rawArgs === "object" && rawArgs !== null) {
+                args = rawArgs;
+            } else if (typeof rawArgs === "string") {
+                try {
+                    args = JSON.parse(rawArgs);
+                } catch {
+                    args = {};
+                }
+            } else {
                 args = {};
             }
 
