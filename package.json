@@ -1,7 +1,7 @@
 {
 	"name": "parallax-cli",
 	"version": "1.0.0",
-	"description": "A CLI tool powered by Ink",
+	"description": "An agentic software development assistant",
 	"main": "dist/index.js",
 	"bin": {
 		"parallax": "dist/index.js"
