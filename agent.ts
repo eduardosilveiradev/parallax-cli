@@ -3,25 +3,31 @@
 //
 //  Implements a Manager/Router pattern:
 //   1. Accept user prompt + system context
-//   2. Stream the prompt to the LLM (Ollama, OpenAI-compatible)
+//   2. Stream via the active Provider (Ollama, OpenAI, etc.)
 //   3. If the LLM emits a tool call → pause, execute, append result, re-trigger
 //   4. Yield typed AgentEvents at every state transition so the Ink UI
 //      can render progress without blocking
 //
 //  All public surface area uses strict TypeScript types.
-//  Tool implementations are mocked as placeholders for future work.
 // ─────────────────────────────────────────────────────────────────
 
-import http from "node:http";
 import fs from "node:fs/promises";
 import { exec } from "node:child_process";
 import { type MCPConnection, type ToolDefinition as MCPToolDef, callMCPTool } from "./mcp-client.js";
+import {
+    type ChatMessage,
+    type ToolCall,
+    type ToolDefinition,
+    type StreamChunk,
+    getProvider,
+    DEFAULT_PROVIDER,
+} from "./providers.js";
 
-// ── Config ─────────────────────────────────────────────────────
+export type { ChatMessage };
+export { DEFAULT_PROVIDER };
 
-const OLLAMA_HOST = process.env["OLLAMA_HOST"] ?? "localhost";
-const OLLAMA_PORT = parseInt(process.env["OLLAMA_PORT"] ?? "11434", 10);
-const MODEL = process.env["OLLAMA_MODEL"] ?? "cogito:14b";
+// Re-export the default model (from env, used as initial state in UI)
+export const DEFAULT_MODEL = process.env["OLLAMA_MODEL"] ?? "cogito:14b";
 
 // ── Event types (consumed by the Ink UI) ───────────────────────
 //
@@ -39,46 +45,10 @@ export type AgentEvent =
     | { type: "error"; message: string }
     | { type: "done"; fullResponse: string };
 
-// ── Message types (OpenAI-compatible chat format) ──────────────
-
-export interface ChatMessage {
-    role: "system" | "user" | "assistant" | "tool";
-    content: string;
-    tool_calls?: ToolCall[];
-    tool_call_id?: string;
-}
-
-interface ToolCall {
-    id?: string;
-    type?: "function";
-    function: {
-        name: string;
-        arguments: Record<string, unknown> | string; // Ollama sends object, OpenAI sends JSON string
-    };
-}
-
-// ── Tool schema (OpenAI function-calling format) ───────────────
+// ── Tool definitions (OpenAI function-calling format) ───────────
 //
 // These definitions are sent to the LLM alongside every request
 // so it understands which tools are available and their schemas.
-
-interface ToolParameter {
-    type: string;
-    description: string;
-}
-
-interface ToolDefinition {
-    type: "function";
-    function: {
-        name: string;
-        description: string;
-        parameters: {
-            type: "object";
-            properties: Record<string, ToolParameter>;
-            required: string[];
-        };
-    };
-}
 
 const TOOL_DEFINITIONS: ToolDefinition[] = [
     {
@@ -265,146 +235,7 @@ async function dispatchMCPTool(
     return `error: no mcp connection owns tool "${prefixedName}"`;
 }
 
-// ── LLM streaming transport (node:http) ────────────────────────
-//
-// Low-level helper that POSTs to Ollama's /api/chat with
-// streaming enabled and yields each parsed NDJSON chunk.
-// This is separated from the orchestration logic so the
-// transport layer can be swapped for OpenAI, Anthropic, etc.
 
-interface OllamaStreamChunk {
-    message?: { role?: string; content?: string; tool_calls?: ToolCall[] };
-    done: boolean;
-}
-
-function streamLLM(
-    messages: ChatMessage[],
-    extraTools: MCPToolDef[] = [],
-): AsyncIterable<OllamaStreamChunk> {
-    const allTools = [...TOOL_DEFINITIONS, ...extraTools];
-    const payload = JSON.stringify({
-        model: MODEL,
-        messages,
-        tools: allTools.length > 0 ? allTools : undefined,
-        stream: true,
-    });
-
-    // We return an async iterable backed by a promise-based queue
-    // so consumers can `for await` over chunks as they arrive.
-    return {
-        [Symbol.asyncIterator]() {
-            // Buffered queue: resolvers waiting for the next chunk
-            const queue: OllamaStreamChunk[] = [];
-            let resolve: ((value: IteratorResult<OllamaStreamChunk>) => void) | null =
-                null;
-            let finished = false;
-
-            function push(chunk: OllamaStreamChunk) {
-                if (resolve) {
-                    const r = resolve;
-                    resolve = null;
-                    r({ value: chunk, done: false });
-                } else {
-                    queue.push(chunk);
-                }
-            }
-
-            function end() {
-                finished = true;
-                if (resolve) {
-                    const r = resolve;
-                    resolve = null;
-                    r({ value: undefined as any, done: true });
-                }
-            }
-
-            // Fire the HTTP request
-            const req = http.request(
-                {
-                    hostname: OLLAMA_HOST,
-                    port: OLLAMA_PORT,
-                    path: "/api/chat",
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Content-Length": Buffer.byteLength(payload),
-                    },
-                },
-                (res) => {
-                    if (res.statusCode !== 200) {
-                        let body = "";
-                        res.on("data", (c) => (body += c));
-                        res.on("end", () => {
-                            push({
-                                message: {
-                                    content: `[ollama error ${res.statusCode}] ${body}`,
-                                },
-                                done: true,
-                            });
-                            end();
-                        });
-                        return;
-                    }
-
-                    let buffer = "";
-
-                    res.on("data", (chunk: Buffer) => {
-                        buffer += chunk.toString();
-                        const lines = buffer.split("\n");
-                        buffer = lines.pop() ?? "";
-
-                        for (const line of lines) {
-                            if (!line.trim()) continue;
-                            try {
-                                const json: OllamaStreamChunk = JSON.parse(line);
-                                push(json);
-                                if (json.done) {
-                                    end();
-                                    return;
-                                }
-                            } catch {
-                                // skip malformed NDJSON
-                            }
-                        }
-                    });
-
-                    res.on("end", () => end());
-                    res.on("error", () => end());
-                },
-            );
-
-            req.on("error", (err: NodeJS.ErrnoException) => {
-                const msg =
-                    err.code === "ECONNREFUSED"
-                        ? "cannot connect to ollama — is it running?"
-                        : `connection error: ${err.message}`;
-                push({ message: { content: `[error] ${msg}` }, done: true });
-                end();
-            });
-
-            req.write(payload);
-            req.end();
-
-            // Async iterator protocol
-            return {
-                next(): Promise<IteratorResult<OllamaStreamChunk>> {
-                    if (queue.length > 0) {
-                        return Promise.resolve({ value: queue.shift()!, done: false });
-                    }
-                    if (finished) {
-                        return Promise.resolve({
-                            value: undefined as any,
-                            done: true,
-                        });
-                    }
-                    return new Promise((r) => {
-                        resolve = r;
-                    });
-                },
-            };
-        },
-    };
-}
 
 // ── System prompt ──────────────────────────────────────────────
 
@@ -436,9 +267,15 @@ export async function* runAgent(
     prompt: string,
     history: ChatMessage[] = [],
     mcpConnections: MCPConnection[] = [],
+    model: string = DEFAULT_MODEL,
+    providerName: string = DEFAULT_PROVIDER,
 ): AsyncGenerator<AgentEvent> {
-    // ── Collect all MCP tool definitions ──────────────────────
+    // ── Resolve the provider ────────────────────────────────────
+    const provider = getProvider(providerName);
+
+    // ── Collect all tool definitions ────────────────────────────
     const mcpTools: MCPToolDef[] = mcpConnections.flatMap((c) => c.tools);
+    const allTools: ToolDefinition[] = [...TOOL_DEFINITIONS, ...mcpTools];
 
     // ── Build the initial message history ──────────────────────
     const messages: ChatMessage[] = [
@@ -454,17 +291,17 @@ export async function* runAgent(
         let fullContent = "";
         let toolCalls: ToolCall[] = [];
 
-        // Stream tokens from the LLM (native + MCP tools)
-        for await (const chunk of streamLLM(messages, mcpTools)) {
+        // Stream via the provider
+        for await (const chunk of provider.stream(messages, model, allTools)) {
             // Accumulate text tokens
-            if (chunk.message?.content) {
-                fullContent += chunk.message.content;
-                yield { type: "token", content: chunk.message.content };
+            if (chunk.content) {
+                fullContent += chunk.content;
+                yield { type: "token", content: chunk.content };
             }
 
             // Accumulate tool calls (may arrive across multiple chunks)
-            if (chunk.message?.tool_calls) {
-                toolCalls.push(...chunk.message.tool_calls);
+            if (chunk.tool_calls) {
+                toolCalls.push(...chunk.tool_calls);
             }
         }
 

@@ -4,13 +4,15 @@ import { render, Box, Text, useInput, useApp } from "ink";
 import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
 import chalk from "chalk";
-import { runAgent, type AgentEvent, type ChatMessage } from "./agent.js";
+import { runAgent, DEFAULT_MODEL, DEFAULT_PROVIDER, type AgentEvent, type ChatMessage } from "./agent.js";
+import { getProvider } from "./providers.js";
 import {
     connectToServer,
     disconnectServer,
     type MCPServerConfig,
     type MCPConnection,
 } from "./mcp-client.js";
+import { commands, type AppContext } from "./commands.js";
 
 // ── Markdown renderer (grayscale theme) ────────────────────────
 
@@ -43,9 +45,7 @@ function renderMarkdown(text: string): string {
     return (marked.parse(text) as string).trimEnd();
 }
 
-// ── Config ─────────────────────────────────────────────────────
 
-const MODEL = process.env["OLLAMA_MODEL"] ?? "cogito:14b";
 
 // MCP server configs: override with PARALLAX_MCP_SERVERS env var (JSON array),
 // or fall back to the built-in filesystem + shell servers.
@@ -75,12 +75,12 @@ interface ToolActivity {
 }
 
 type DisplayMessage =
-    | { type: "chat"; role: "user" | "assistant"; content: string }
+    | { type: "chat"; role: "user" | "assistant" | "system"; content: string }
     | { type: "tools"; activities: ToolActivity[] };
 
 // ── Components ─────────────────────────────────────────────────
 
-function Header() {
+function Header({ model }: { model: string }) {
     return (
         <Box
             borderStyle="round"
@@ -89,7 +89,7 @@ function Header() {
             justifyContent="center"
         >
             <Text bold>Parallax</Text>
-            <Text dimColor>{"  ·  "}{MODEL}</Text>
+            <Text dimColor>{"  ·  "}{model}</Text>
         </Box>
     );
 }
@@ -106,18 +106,22 @@ function MessageRow({ msg }: { msg: DisplayMessage }) {
     }
 
     const isAI = msg.role === "assistant";
+    const isSystem = msg.role === "system";
     const rendered = useMemo(
-        () => (isAI ? renderMarkdown(msg.content) : msg.content),
-        [msg.content, isAI],
+        () => ((isAI || isSystem) ? renderMarkdown(msg.content) : msg.content),
+        [msg.content, isAI, isSystem],
     );
+
+    const label = isSystem
+        ? "     system "
+        : isAI
+            ? "  assistant "
+            : "        you ";
 
     return (
         <Box flexDirection="row" paddingX={2} marginY={0}>
-            <Text bold={isAI} dimColor={!isAI}>
-                {isAI ? "  assistant " : "        you "}
-            </Text>
-            <Text dimColor> │ </Text>
-            <Text wrap="wrap" dimColor={!isAI}>{rendered}</Text>
+            <Text dimColor color={isAI ? "white" : "grey"}> │ </Text>
+            <Text wrap="wrap" dimColor={!isAI && !isSystem} italic={isSystem}>{rendered}</Text>
         </Box>
     );
 }
@@ -151,6 +155,59 @@ function StatusLine({ status }: { status: string | null }) {
     );
 }
 
+function CommandPalette({
+    items,
+    selectedIndex,
+}: {
+    items: [string, (typeof commands)[string]][];
+    selectedIndex: number;
+}) {
+    return (
+        <Box paddingX={4} marginY={0} flexDirection="column">
+            {items.map(([key, value], i) => {
+                const selected = i === selectedIndex;
+                return (
+                    <Box key={key} flexDirection="row">
+                        <Text color={selected ? "white" : "grey"} bold={selected} inverse={selected}>
+                            {" "}{key}{" "}
+                        </Text>
+                        <Text color={"grey"}>{" "}{value.description}</Text>
+                    </Box>
+                );
+            })}
+        </Box>
+    );
+}
+
+function ModelPalette({
+    items,
+    selectedIndex,
+    provider,
+}: {
+    items: string[];
+    selectedIndex: number;
+    provider: string;
+}) {
+    return (
+        <Box paddingX={4} marginY={0} flexDirection="column">
+            <Text dimColor>models from <Text bold>{provider}</Text>:</Text>
+            {items.slice(0, 12).map((name, i) => {
+                const selected = i === selectedIndex;
+                return (
+                    <Box key={name} flexDirection="row">
+                        <Text color={selected ? "white" : "grey"} bold={selected} inverse={selected}>
+                            {" "}{name}{" "}
+                        </Text>
+                    </Box>
+                );
+            })}
+            {items.length > 12 && (
+                <Text dimColor>  …and {items.length - 12} more (type to filter)</Text>
+            )}
+        </Box>
+    );
+}
+
 function ToolBadge({ name, result }: { name: string; result?: string }) {
     return (
         <Box paddingX={4} marginY={0} flexDirection="column">
@@ -172,18 +229,26 @@ function ErrorBanner({ message }: { message: string }) {
 }
 
 function InputLine({ value, disabled }: { value: string; disabled: boolean }) {
+    const lines = value.split("\n");
     return (
         <Box
-            borderStyle="round"
+            borderStyle="single"
+            borderLeft={false}
+            borderRight={false}
             borderDimColor={disabled}
-            paddingX={2}
+            paddingX={1}
             paddingY={0}
+            flexDirection="column"
         >
-            <Text bold={!disabled} dimColor={disabled}>
-                {"› "}
-            </Text>
-            <Text dimColor={disabled}>{value}</Text>
-            {!disabled && <Text>▎</Text>}
+            {lines.map((line, i) => (
+                <Box key={i} flexDirection="row">
+                    <Text bold={!disabled} dimColor={disabled}>
+                        {i === 0 ? "> " : "  "}
+                    </Text>
+                    <Text dimColor={disabled}>{line}</Text>
+                    {!disabled && i === lines.length - 1 && <Text>▎</Text>}
+                </Box>
+            ))}
         </Box>
     );
 }
@@ -200,6 +265,51 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
     const [mcpStatus, setMcpStatus] = useState<string | null>(null);
     const [tools, setTools] = useState<ToolActivity[]>([]);
     const [error, setError] = useState<string | null>(null);
+    const [model, setModel] = useState(DEFAULT_MODEL);
+    const [provider, setProvider] = useState(DEFAULT_PROVIDER);
+    const [showCommandPalette, setShowCommandPalette] = useState(false);
+    const [selectedIndex, setSelectedIndex] = useState(0);
+
+    // Model palette state
+    const [availableModels, setAvailableModels] = useState<string[]>([]);
+    const [showModelPalette, setShowModelPalette] = useState(false);
+    const [modelPaletteIndex, setModelPaletteIndex] = useState(0);
+
+    // Compute filtered commands for the palette (shared between UI and dispatch)
+    const filteredCommands = useMemo(() => {
+        if (!input.startsWith("/")) return [];
+        const query = input.slice(1);
+        return Object.entries(commands).filter(([key]) =>
+            key.startsWith(query),
+        );
+    }, [input]);
+
+    useEffect(() => {
+        setShowCommandPalette(input.startsWith("/") && !showModelPalette);
+        setSelectedIndex(0);
+    }, [input, showModelPalette]);
+
+    // Fetch models when provider changes or model palette opens
+    useEffect(() => {
+        let cancelled = false;
+        getProvider(provider).listModels().then((models) => {
+            if (!cancelled) setAvailableModels(models);
+        });
+        return () => { cancelled = true; };
+    }, [provider]);
+
+    // Filtered models for the palette (filter by search term after /model )
+    const filteredModels = useMemo(() => {
+        if (!showModelPalette) return [];
+        const match = input.match(/^\/model\s*(.*)/i);
+        const query = (match?.[1] ?? "").toLowerCase();
+        return availableModels.filter((m) => m.toLowerCase().includes(query));
+    }, [showModelPalette, input, availableModels]);
+
+    // Reset model palette index when filter changes
+    useEffect(() => {
+        setModelPaletteIndex(0);
+    }, [filteredModels.length]);
 
     // Maintain ChatMessage history for the agent (includes system/tool msgs)
     const agentHistory = useRef<ChatMessage[]>([]);
@@ -218,7 +328,7 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
         let toolsAccum: ToolActivity[] = [];
 
         try {
-            const gen = runAgent(text, agentHistory.current, mcpConnections);
+            const gen = runAgent(text, agentHistory.current, mcpConnections, model, provider);
             let fullResponse = "";
 
             for await (const event of gen) {
@@ -287,20 +397,145 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
         }
     };
 
-    useInput((ch, key) => {
-        if (key.escape || (key.ctrl && ch === "c")) {
-            // Kill MCP child processes so Node can exit cleanly
+    // ── Helpers for commands ───────────────────────────────────
+
+    const addSystemMessage = (content: string) => {
+        setMessages((prev) => [
+            ...prev,
+            { type: "chat", role: "system", content },
+        ]);
+    };
+
+    const appContext: AppContext = {
+        exit: () => {
             mcpConnections.forEach((c) => disconnectServer(c));
             exit();
+        },
+        clearMessages: () => setMessages([]),
+        resetHistory: () => {
+            agentHistory.current = [];
+        },
+        addSystemMessage,
+        mcpConnections,
+        model,
+        setModel,
+        provider,
+        setProvider,
+    };
+
+    // ── Input handling ────────────────────────────────────────
+
+    useInput((ch, key) => {
+        if (key.escape || (key.ctrl && ch === "c")) {
+            // Dismiss model palette instead of quitting
+            if (showModelPalette) {
+                setShowModelPalette(false);
+                setInput("");
+                return;
+            }
+            appContext.exit();
             return;
         }
 
         if (busy) return;
 
+        // ── Arrow key navigation in command palette ───────
+        if (showModelPalette && filteredModels.length > 0) {
+            if (key.upArrow) {
+                setModelPaletteIndex((i) =>
+                    i <= 0 ? Math.min(filteredModels.length, 12) - 1 : i - 1,
+                );
+                return;
+            }
+            if (key.downArrow) {
+                setModelPaletteIndex((i) =>
+                    i >= Math.min(filteredModels.length, 12) - 1 ? 0 : i + 1,
+                );
+                return;
+            }
+            if (key.tab || key.return) {
+                const selected = filteredModels[modelPaletteIndex];
+                if (selected) {
+                    setModel(selected);
+                    addSystemMessage(`Switched model to **${selected}**`);
+                }
+                setShowModelPalette(false);
+                setInput("");
+                return;
+            }
+        }
+
+        if (showCommandPalette && filteredCommands.length > 0) {
+            if (key.upArrow) {
+                setSelectedIndex((i) =>
+                    i <= 0 ? filteredCommands.length - 1 : i - 1,
+                );
+                return;
+            }
+            if (key.downArrow) {
+                setSelectedIndex((i) =>
+                    i >= filteredCommands.length - 1 ? 0 : i + 1,
+                );
+                return;
+            }
+
+            // Tab to autocomplete the selected command
+            if (key.tab) {
+                const [cmdKey] = filteredCommands[selectedIndex] ?? [];
+                if (cmdKey) setInput(`/${cmdKey}`);
+                return;
+            }
+        }
+
         if (key.return) {
+            // Alt+Enter fallback for non-Kitty terminals
+            if (key.meta) {
+                setInput((prev) => prev + "\n");
+                return;
+            }
+
             if (input.trim().length === 0) return;
             const text = input.trim();
             setInput("");
+
+            // ── Slash-command dispatch ────────────────────────
+            if (text.startsWith("/")) {
+                // If palette is open with a selection, use that
+                const selected = showCommandPalette && filteredCommands.length > 0
+                    ? filteredCommands[selectedIndex]
+                    : null;
+
+                if (selected) {
+                    const [cmdKey, cmd] = selected;
+                    // Special handling for /model — open model palette
+                    if (cmdKey === "model") {
+                        setShowModelPalette(true);
+                        setInput("/model ");
+                        return;
+                    }
+                    cmd.action(appContext, []);
+                } else {
+                    // Exact match fallback (e.g. fully typed command)
+                    const parts = text.slice(1).split(/\s+/);
+                    const cmdKey = parts[0] ?? "";
+                    const cmdArgs = parts.slice(1);
+                    const cmd = commands[cmdKey];
+
+                    if (cmd) {
+                        // /model with no args → open palette
+                        if (cmdKey === "model" && cmdArgs.length === 0) {
+                            setShowModelPalette(true);
+                            setInput("/model ");
+                            return;
+                        }
+                        cmd.action(appContext, cmdArgs);
+                    } else {
+                        setError(`Unknown command: /${cmdKey}`);
+                    }
+                }
+                return;
+            }
+
             sendMessage(text);
             return;
         }
@@ -317,7 +552,7 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
 
     return (
         <Box flexDirection="column" paddingX={2} paddingY={1}>
-            <Header />
+            <Header model={model} />
 
             {/* Chat history */}
             <Box flexDirection="column" marginY={1} paddingY={1}>
@@ -353,13 +588,21 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
 
             {/* Input */}
             <InputLine value={input} disabled={busy} />
+            {showCommandPalette && filteredCommands.length > 0 && !showModelPalette && (
+                <CommandPalette items={filteredCommands} selectedIndex={selectedIndex} />
+            )}
+            {showModelPalette && filteredModels.length > 0 && (
+                <ModelPalette items={filteredModels} selectedIndex={modelPaletteIndex} provider={provider} />
+            )}
 
             {/* Status bar */}
             <Box marginTop={1} paddingX={2} justifyContent="space-between">
                 <Text dimColor>
-                    <Text bold dimColor>enter</Text> send
+                    <Text bold dimColor>enter</Text> send{"  "}
+                    <Text bold dimColor>alt+enter</Text> newline
                 </Text>
                 <Text dimColor>
+                    {model}{" · "}
                     {mcpConnections.length > 0
                         ? `${mcpConnections.length} mcp · `
                         : ""}
