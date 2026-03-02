@@ -14,15 +14,18 @@ importers:
       chalk:
         specifier: ^5.6.2
         version: 5.6.2
+      diff:
+        specifier: ^8.0.3
+        version: 8.0.3
       ink:
         specifier: ^6.8.0
         version: 6.8.0(@types/react@19.2.14)(react@19.2.4)
       marked:
-        specifier: ^17.0.3
-        version: 17.0.3
+        specifier: ^15.0.12
+        version: 15.0.12
       marked-terminal:
         specifier: ^7.3.0
-        version: 7.3.0(marked@17.0.3)
+        version: 7.3.0(marked@15.0.12)
       react:
         specifier: ^19.2.4
         version: 19.2.4
@@ -435,6 +438,10 @@ packages:
     resolution: {integrity: sha512-X07nttJQkwkfKfvTPG/KSnE2OMdcUCao6+eXF3wmnIQRn2aPAHH3VxDbDOdegkd6JbPsXqShpvEOHfAT+nCNwQ==}
     engines: {node: '>=0.3.1'}
 
+  diff@8.0.3:
+    resolution: {integrity: sha512-qejHi7bcSD4hQAZE0tNAawRK1ZtafHDmMTMkrrIGgSLl7hTnQHmKCeB45xAcbfTqK2zowkM3j3bHt/4b/ARbYQ==}
+    engines: {node: '>=0.3.1'}
+
   dunder-proto@1.0.1:
     resolution: {integrity: sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A==}
     engines: {node: '>= 0.4'}
@@ -653,9 +660,9 @@ packages:
     peerDependencies:
       marked: '>=1 <16'
 
-  marked@17.0.3:
-    resolution: {integrity: sha512-jt1v2ObpyOKR8p4XaUJVk3YWRJ5n+i4+rjQopxvV32rSndTJXvIzuUdWWIy/1pFQMkQmvTXawzDNqOH/CUmx6A==}
-    engines: {node: '>= 20'}
+  marked@15.0.12:
+    resolution: {integrity: sha512-8dD6FusOQSrpv9Z1rdNMdlSgQOIP880DHqnohobOmYLElGEqAL/JvxvuxZO16r4HtjTlfPRDC1hbvxC9dPN2nA==}
+    engines: {node: '>= 18'}
     hasBin: true
 
   math-intrinsics@1.1.0:
@@ -1303,6 +1310,8 @@ snapshots:
 
   diff@4.0.4: {}
 
+  diff@8.0.3: {}
+
   dunder-proto@1.0.1:
     dependencies:
       call-bind-apply-helpers: 1.0.2
@@ -1550,18 +1559,18 @@ snapshots:
 
   make-error@1.3.6: {}
 
-  marked-terminal@7.3.0(marked@17.0.3):
+  marked-terminal@7.3.0(marked@15.0.12):
     dependencies:
       ansi-escapes: 7.3.0
       ansi-regex: 6.2.2
       chalk: 5.6.2
       cli-highlight: 2.1.11
       cli-table3: 0.6.5
-      marked: 17.0.3
+      marked: 15.0.12
       node-emoji: 2.2.0
       supports-hyperlinks: 3.2.0
 
-  marked@17.0.3: {}
+  marked@15.0.12: {}
 
   math-intrinsics@1.1.0: {}
 

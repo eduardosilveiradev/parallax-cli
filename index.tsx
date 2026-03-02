@@ -13,6 +13,17 @@ import {
     type MCPConnection,
 } from "./mcp-client.js";
 import { commands, type AppContext } from "./commands.js";
+import {
+    generateId,
+    deriveTitle,
+    generateTitle,
+    saveConversation,
+    loadConversation as loadConv,
+    listConversations as listConvs,
+    deleteConversation as deleteConv,
+    getLastModel,
+    type ConversationSummary,
+} from "./store.js";
 
 // ── Markdown renderer (grayscale theme) ────────────────────────
 
@@ -46,6 +57,14 @@ function renderMarkdown(text: string): string {
 }
 
 
+/** Format a token count compactly. */
+function formatTokens(n: number): string {
+    if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+    return String(n);
+}
+
+
+
 
 // MCP server configs: override with PARALLAX_MCP_SERVERS env var (JSON array),
 // or fall back to the built-in filesystem + shell servers.
@@ -75,7 +94,7 @@ interface ToolActivity {
 }
 
 type DisplayMessage =
-    | { type: "chat"; role: "user" | "assistant" | "system"; content: string }
+    | { type: "chat"; role: "user" | "assistant" | "system"; content: string; tokens?: number }
     | { type: "tools"; activities: ToolActivity[] };
 
 // ── Components ─────────────────────────────────────────────────
@@ -112,16 +131,18 @@ function MessageRow({ msg }: { msg: DisplayMessage }) {
         [msg.content, isAI, isSystem],
     );
 
-    const label = isSystem
-        ? "     system "
-        : isAI
-            ? "  assistant "
-            : "        you ";
-
     return (
-        <Box flexDirection="row" paddingX={2} marginY={0}>
-            <Text dimColor color={isAI ? "white" : "grey"}> │ </Text>
-            <Text wrap="wrap" dimColor={!isAI && !isSystem} italic={isSystem}>{rendered}</Text>
+        <Box flexDirection="column" paddingX={2} marginY={0}>
+            <Box flexDirection="row">
+                <Text dimColor color={isAI ? "white" : "grey"}> │ </Text>
+                <Text wrap="wrap" dimColor={!isAI && !isSystem} italic={isSystem}>{rendered}</Text>
+            </Box>
+            {msg.type === "chat" && msg.tokens != null && msg.tokens > 0 && (
+                <Box flexDirection="row">
+                    <Text dimColor color="grey">   </Text>
+                    <Text dimColor>{formatTokens(msg.tokens)} tokens</Text>
+                </Box>
+            )}
         </Box>
     );
 }
@@ -136,7 +157,6 @@ function StreamingRow({ content }: { content: string }) {
 
     return (
         <Box flexDirection="row" paddingX={2} marginY={0}>
-            <Text bold>{"  assistant "}</Text>
             <Text dimColor> │ </Text>
             <Text wrap="wrap">
                 {content}
@@ -208,16 +228,155 @@ function ModelPalette({
     );
 }
 
-function ToolBadge({ name, result }: { name: string; result?: string }) {
+function ConversationPalette({
+    items,
+    selectedIndex,
+}: {
+    items: ConversationSummary[];
+    selectedIndex: number;
+}) {
     return (
         <Box paddingX={4} marginY={0} flexDirection="column">
-            <Box>
-                <Text inverse bold>{` ${name} `}</Text>
-                {result && <Text dimColor>{"  "}{result}</Text>}
-            </Box>
+            <Text dimColor>saved conversations:</Text>
+            {items.slice(0, 12).map((c, i) => {
+                const selected = i === selectedIndex;
+                const date = new Date(c.updatedAt).toLocaleDateString();
+                const label = `${c.title.slice(0, 50)}${c.title.length > 50 ? "…" : ""}`;
+                return (
+                    <Box key={c.id} flexDirection="column">
+                        <Box flexDirection="row">
+                            <Text color={selected ? "white" : "grey"} bold={selected} inverse={selected}>
+                                {" "}{c.id}{" "}
+                            </Text>
+                            <Text color={selected ? "white" : "grey"}>{" "}{label}</Text>
+                            <Text dimColor>{"  "}{date}{"  "}{c.messageCount} msgs</Text>
+                        </Box>
+                        {c.lastMessage && (
+                            <Text dimColor>{"          "}{c.lastMessage}{c.lastMessage.length >= 120 ? "…" : ""}</Text>
+                        )}
+                    </Box>
+                );
+            })}
+            {items.length > 12 && (
+                <Text dimColor>  …and {items.length - 12} more</Text>
+            )}
+            {items.length === 0 && (
+                <Text dimColor>  no saved conversations</Text>
+            )}
         </Box>
     );
 }
+
+/** Map raw tool IDs to friendly display names (OpenMoA style). */
+function toolDisplayName(raw: string): string {
+    const NAMES: Record<string, string> = {
+        // Built-in tools
+        readLocalFile: "Read File",
+        patchLocalFile: "Patch File",
+        executeTerminalCommand: "Terminal",
+        executeRemoteVPS: "Remote Exec",
+        // MCP filesystem tools
+        mcp_filesystem_read_file: "Read File",
+        mcp_filesystem_read_multiple_files: "Read Files",
+        mcp_filesystem_write_file: "Write File",
+        mcp_filesystem_edit_file: "Edit File",
+        mcp_filesystem_create_directory: "Create Dir",
+        mcp_filesystem_list_directory: "List Dir",
+        mcp_filesystem_directory_tree: "Dir Tree",
+        mcp_filesystem_move_file: "Move File",
+        mcp_filesystem_search_files: "Search Files",
+        mcp_filesystem_get_file_info: "File Info",
+        mcp_filesystem_list_allowed_directories: "Allowed Dirs",
+    };
+    if (NAMES[raw]) return NAMES[raw]!;
+
+    // MCP tools: strip prefix, capitalize
+    const stripped = raw.replace(/^mcp_[^_]+_/, "");
+    return stripped.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function DiffView({ raw }: { raw: string }) {
+    let diff = raw.trim();
+    if (diff.startsWith("```")) {
+        diff = diff.replace(/^```\w*\n?/, "").replace(/\n?```$/, "");
+    }
+    const lines = diff.split("\n");
+
+    // Extract filename
+    let fileName = "";
+    for (const line of lines) {
+        if (line.startsWith("+++")) {
+            const name = line.replace(/^\+\+\+\s+/, "").replace(/\t.*$/, "");
+            if (name && name !== "/dev/null") fileName = name.replace(/^[ab]\//, "");
+        }
+    }
+
+    // Track line numbers
+    let oldLine = 0, newLine = 0;
+
+    const rendered: React.ReactNode[] = [];
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]!;
+        if (line.startsWith("Index:") || line.startsWith("===") || line.startsWith("diff ")) continue;
+        if (line.startsWith("---") || line.startsWith("+++")) continue;
+        if (line.startsWith("@@")) {
+            const match = line.match(/@@ -(\d+).*\+(\d+)/);
+            if (match) { oldLine = Number(match[1]); newLine = Number(match[2]); }
+            rendered.push(
+                <Text key={i} dimColor>{" ...  ... "}@ Hunk: {oldLine}, {newLine}</Text>
+            );
+            continue;
+        }
+        if (line.startsWith("-")) {
+            const oln = String(oldLine++).padStart(4);
+            rendered.push(
+                <Text key={i} backgroundColor="red" color="white">{oln}      - {line.slice(1)}</Text>
+            );
+        } else if (line.startsWith("+")) {
+            const nln = String(newLine++).padStart(4);
+            rendered.push(
+                <Text key={i} backgroundColor="green" color="black">{"     "}{nln} + {line.slice(1)}</Text>
+            );
+        } else {
+            // context
+            const oln = String(oldLine++).padStart(4);
+            const nln = String(newLine++).padStart(4);
+            rendered.push(
+                <Text key={i}><Text dimColor>{oln} {nln}</Text>   {line.startsWith(" ") ? line.slice(1) : line}</Text>
+            );
+        }
+    }
+
+    return (
+        <Box flexDirection="column" paddingLeft={0} marginTop={0}>
+            <Text> <Text color="yellow" bold>●</Text> <Text bold>Edit File:</Text>  <Text dimColor>{fileName}</Text></Text>
+            {rendered}
+        </Box>
+    );
+}
+
+function ToolBadge({ name, result }: { name: string; result?: string }) {
+    const display = toolDisplayName(name);
+    const isDiff = result?.startsWith("__DIFF__");
+    const diffContent = isDiff ? result!.slice(8) : undefined;
+    const cleanResult = isDiff ? undefined : result;
+
+    // For diffs, the DiffView already has its own header
+    if (diffContent) {
+        return (
+            <Box paddingX={4} marginY={0} flexDirection="column">
+                <DiffView raw={diffContent} />
+            </Box>
+        );
+    }
+
+    return (
+        <Box paddingX={4} marginY={0}>
+            <Text><Text color="yellow" bold>● </Text><Text bold>{display}:</Text>  <Text dimColor>{cleanResult ?? ""}</Text></Text>
+        </Box>
+    );
+}
+
 
 function ErrorBanner({ message }: { message: string }) {
     return (
@@ -270,10 +429,33 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
     const [showCommandPalette, setShowCommandPalette] = useState(false);
     const [selectedIndex, setSelectedIndex] = useState(0);
 
+    // Load last-used model from most recent conversation on startup
+    useEffect(() => {
+        getLastModel().then((saved) => {
+            if (saved) {
+                setModel(saved.model);
+                setProvider(saved.provider);
+            }
+        });
+    }, []);
+
     // Model palette state
     const [availableModels, setAvailableModels] = useState<string[]>([]);
     const [showModelPalette, setShowModelPalette] = useState(false);
     const [modelPaletteIndex, setModelPaletteIndex] = useState(0);
+
+    // Conversation palette state
+    const [convoPaletteItems, setConvoPaletteItems] = useState<ConversationSummary[]>([]);
+    const [showConvoPalette, setShowConvoPalette] = useState(false);
+    const [convoPaletteIndex, setConvoPaletteIndex] = useState(0);
+
+    const openConvoPalette = () => {
+        listConvs().then((items) => {
+            setConvoPaletteItems(items);
+            setShowConvoPalette(true);
+            setConvoPaletteIndex(0);
+        });
+    };
 
     // Compute filtered commands for the palette (shared between UI and dispatch)
     const filteredCommands = useMemo(() => {
@@ -313,6 +495,11 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
 
     // Maintain ChatMessage history for the agent (includes system/tool msgs)
     const agentHistory = useRef<ChatMessage[]>([]);
+    const [totalTokens, setTotalTokens] = useState(0);
+
+    // Conversation persistence
+    const conversationId = useRef(generateId());
+    const createdAt = useRef(new Date().toISOString());
 
     const sendMessage = async (text: string) => {
         // Show user message immediately
@@ -326,6 +513,7 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
 
         // Track tools locally (avoids stale React state in async closure)
         let toolsAccum: ToolActivity[] = [];
+        let turnTokens = 0;
 
         try {
             const gen = runAgent(text, agentHistory.current, mcpConnections, model, provider);
@@ -367,6 +555,11 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
                         setMcpStatus(event.message);
                         break;
 
+                    case "usage":
+                        setTotalTokens((prev) => prev + event.usage.totalTokens);
+                        turnTokens += event.usage.completionTokens;
+                        break;
+
                     case "done":
                         // Persist tool badges + assistant message in correct order
                         setMessages((prev) => {
@@ -375,16 +568,35 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
                                 next.push({ type: "tools", activities: toolsAccum });
                             }
                             if (event.fullResponse) {
-                                next.push({ type: "chat", role: "assistant", content: event.fullResponse });
+                                next.push({ type: "chat", role: "assistant", content: event.fullResponse, tokens: turnTokens });
                             }
                             return next;
                         });
                         setTools([]);
-                        agentHistory.current = [
-                            ...agentHistory.current,
-                            { role: "user", content: text },
-                            { role: "assistant", content: event.fullResponse },
-                        ];
+                        // Use the full message history from the agent (includes tool calls/results)
+                        const fullHistory = event.messages;
+                        // Attach token count to the last assistant message
+                        const lastMsg = fullHistory[fullHistory.length - 1];
+                        if (lastMsg && lastMsg.role === "assistant") {
+                            lastMsg.tokens = turnTokens;
+                        }
+                        agentHistory.current = fullHistory;
+                        // Auto-save to disk (generate title on first exchange)
+                        const isFirstExchange = fullHistory.filter((m) => m.role === "user").length === 1;
+                        const titlePromise = isFirstExchange
+                            ? generateTitle(fullHistory)
+                            : Promise.resolve(deriveTitle(fullHistory));
+                        titlePromise.then((title) =>
+                            saveConversation({
+                                id: conversationId.current,
+                                title,
+                                model,
+                                provider,
+                                createdAt: createdAt.current,
+                                updatedAt: new Date().toISOString(),
+                                messages: fullHistory,
+                            }),
+                        ).catch(() => { /* best-effort */ });
                         break;
                 }
             }
@@ -406,6 +618,8 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
         ]);
     };
 
+    const deleteAllOtp = useRef<string | null>(null);
+
     const appContext: AppContext = {
         exit: () => {
             mcpConnections.forEach((c) => disconnectServer(c));
@@ -414,22 +628,87 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
         clearMessages: () => setMessages([]),
         resetHistory: () => {
             agentHistory.current = [];
+            setTotalTokens(0);
+            conversationId.current = generateId();
+            createdAt.current = new Date().toISOString();
         },
         addSystemMessage,
+        sendMessage,
         mcpConnections,
         model,
         setModel,
         provider,
         setProvider,
+        conversationHistory: agentHistory.current,
+        conversationId: conversationId.current,
+        loadConversation: async (id: string) => {
+            const conv = await loadConv(id);
+            if (!conv) throw new Error(`conversation "${id}" not found`);
+            // Restore state
+            agentHistory.current = conv.messages;
+            conversationId.current = conv.id;
+            createdAt.current = conv.createdAt;
+            setModel(conv.model);
+            setProvider(conv.provider);
+            setTotalTokens(0);
+            // Rebuild display messages from history
+            const display: DisplayMessage[] = [];
+            for (let i = 0; i < conv.messages.length; i++) {
+                const m = conv.messages[i]!;
+
+                if (m.role === "tool") {
+                    // Tool result → render as a tool badge
+                    // Try to get the tool name from the preceding assistant message's tool_calls
+                    let toolName = "tool";
+                    const prev = conv.messages[i - 1];
+                    if (prev?.role === "assistant" && prev.tool_calls) {
+                        const tc = prev.tool_calls.find((tc) => tc.id === m.tool_call_id);
+                        if (tc) toolName = tc.function.name;
+                    }
+                    // Group consecutive tool results into one tools entry
+                    const isDiff = m.content.includes("---") && m.content.includes("+++") && m.content.includes("@@");
+                    const toolResult = isDiff
+                        ? "__DIFF__" + m.content
+                        : (m.content.length > 200 ? m.content.slice(0, 200) + "…" : m.content);
+                    const lastDisplay = display[display.length - 1];
+                    if (lastDisplay?.type === "tools") {
+                        lastDisplay.activities.push({ name: toolName, result: toolResult });
+                    } else {
+                        display.push({ type: "tools", activities: [{ name: toolName, result: toolResult }] });
+                    }
+                } else if (m.role === "assistant" && m.tool_calls && !m.content.trim()) {
+                    // Assistant message with only tool_calls and no text → skip display
+                    continue;
+                } else if (m.role === "assistant" || m.role === "user") {
+                    display.push({
+                        type: "chat",
+                        role: m.role,
+                        content: m.content,
+                        tokens: m.tokens,
+                    });
+                }
+                // Skip system messages (they're the system prompt)
+            }
+            setMessages(display);
+            addSystemMessage(`Loaded conversation \`${id}\` (${conv.messages.length} messages)`);
+        },
+        listConversations: listConvs,
+        deleteConversation: deleteConv,
+        deleteAllOtp,
     };
 
     // ── Input handling ────────────────────────────────────────
 
     useInput((ch, key) => {
         if (key.escape || (key.ctrl && ch === "c")) {
-            // Dismiss model palette instead of quitting
+            // Dismiss palettes instead of quitting
             if (showModelPalette) {
                 setShowModelPalette(false);
+                setInput("");
+                return;
+            }
+            if (showConvoPalette) {
+                setShowConvoPalette(false);
                 setInput("");
                 return;
             }
@@ -439,7 +718,54 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
 
         if (busy) return;
 
-        // ── Arrow key navigation in command palette ───────
+        // Ctrl+L → open conversation palette
+        if (key.ctrl && ch === "l") {
+            openConvoPalette();
+            return;
+        }
+
+        // ── Arrow key navigation in palettes ───────
+        if (showConvoPalette && convoPaletteItems.length > 0) {
+            if (key.upArrow) {
+                setConvoPaletteIndex((i) =>
+                    i <= 0 ? Math.min(convoPaletteItems.length, 12) - 1 : i - 1,
+                );
+                return;
+            }
+            if (key.downArrow) {
+                setConvoPaletteIndex((i) =>
+                    i >= Math.min(convoPaletteItems.length, 12) - 1 ? 0 : i + 1,
+                );
+                return;
+            }
+            if (key.tab || key.return) {
+                const selected = convoPaletteItems[convoPaletteIndex];
+                if (selected) {
+                    appContext.loadConversation(selected.id).catch((err) => {
+                        setError(err.message);
+                    });
+                }
+                setShowConvoPalette(false);
+                setInput("");
+                return;
+            }
+            // 'd' to delete the selected conversation
+            if (ch === "d") {
+                const selected = convoPaletteItems[convoPaletteIndex];
+                if (selected) {
+                    deleteConv(selected.id).then(() => {
+                        // Refresh the list
+                        listConvs().then((items) => {
+                            setConvoPaletteItems(items);
+                            setConvoPaletteIndex((i) => Math.min(i, Math.max(items.length - 1, 0)));
+                            if (items.length === 0) setShowConvoPalette(false);
+                        });
+                    });
+                }
+                return;
+            }
+        }
+
         if (showModelPalette && filteredModels.length > 0) {
             if (key.upArrow) {
                 setModelPaletteIndex((i) =>
@@ -513,6 +839,12 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
                         setInput("/model ");
                         return;
                     }
+                    // Special handling for /load — open conversation palette
+                    if (cmdKey === "load") {
+                        openConvoPalette();
+                        setInput("");
+                        return;
+                    }
                     cmd.action(appContext, []);
                 } else {
                     // Exact match fallback (e.g. fully typed command)
@@ -526,6 +858,12 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
                         if (cmdKey === "model" && cmdArgs.length === 0) {
                             setShowModelPalette(true);
                             setInput("/model ");
+                            return;
+                        }
+                        // /load with no args → open conversation palette
+                        if (cmdKey === "load" && cmdArgs.length === 0) {
+                            openConvoPalette();
+                            setInput("");
                             return;
                         }
                         cmd.action(appContext, cmdArgs);
@@ -594,6 +932,9 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
             {showModelPalette && filteredModels.length > 0 && (
                 <ModelPalette items={filteredModels} selectedIndex={modelPaletteIndex} provider={provider} />
             )}
+            {showConvoPalette && (
+                <ConversationPalette items={convoPaletteItems} selectedIndex={convoPaletteIndex} />
+            )}
 
             {/* Status bar */}
             <Box marginTop={1} paddingX={2} justifyContent="space-between">
@@ -603,6 +944,7 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
                 </Text>
                 <Text dimColor>
                     {model}{" · "}
+                    {"ctx: "}{formatTokens(totalTokens)}{" · "}
                     {mcpConnections.length > 0
                         ? `${mcpConnections.length} mcp · `
                         : ""}

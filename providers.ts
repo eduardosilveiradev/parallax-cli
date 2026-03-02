@@ -18,6 +18,8 @@ export interface ChatMessage {
     content: string;
     tool_calls?: ToolCall[];
     tool_call_id?: string;
+    /** Completion tokens for this message (persisted, not sent to API). */
+    tokens?: number;
 }
 
 export interface ToolCall {
@@ -45,6 +47,12 @@ export interface ToolDefinition {
 // ── Provider interface ─────────────────────────────────────────
 
 /** A single chunk emitted during streaming. */
+export interface TokenUsage {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+}
+
 export interface StreamChunk {
     /** Text content token (may be empty). */
     content?: string;
@@ -52,6 +60,8 @@ export interface StreamChunk {
     tool_calls?: ToolCall[];
     /** True when the model has finished generating. */
     done: boolean;
+    /** Token usage stats (typically sent with the final chunk). */
+    usage?: TokenUsage;
 }
 
 /** The contract every LLM provider must implement. */
@@ -170,6 +180,14 @@ class OllamaProvider implements Provider {
                                         tool_calls: json.message?.tool_calls,
                                         done: json.done,
                                     };
+                                    // Ollama sends token counts in the final chunk
+                                    if (json.done && (json.prompt_eval_count || json.eval_count)) {
+                                        sc.usage = {
+                                            promptTokens: json.prompt_eval_count ?? 0,
+                                            completionTokens: json.eval_count ?? 0,
+                                            totalTokens: (json.prompt_eval_count ?? 0) + (json.eval_count ?? 0),
+                                        };
+                                    }
                                     push(sc);
                                     if (json.done) {
                                         end();
@@ -392,17 +410,25 @@ class OpenAIProvider implements Provider {
                 try {
                     const json = JSON.parse(data);
                     const delta = json.choices?.[0]?.delta;
-                    if (!delta) return;
-                    const tc = delta.tool_calls?.map((t: any) => ({
+                    if (!delta && !json.usage) return;
+                    const tc = delta?.tool_calls?.map((t: any) => ({
                         id: t.id,
                         type: "function" as const,
                         function: { name: t.function?.name ?? "", arguments: t.function?.arguments ?? "" },
                     }));
-                    push({
-                        content: delta.content ?? undefined,
+                    const chunk: StreamChunk = {
+                        content: delta?.content ?? undefined,
                         tool_calls: tc,
                         done: json.choices?.[0]?.finish_reason != null,
-                    });
+                    };
+                    if (json.usage) {
+                        chunk.usage = {
+                            promptTokens: json.usage.prompt_tokens ?? 0,
+                            completionTokens: json.usage.completion_tokens ?? 0,
+                            totalTokens: json.usage.total_tokens ?? 0,
+                        };
+                    }
+                    push(chunk);
                 } catch { /* skip */ }
             },
             (msg) => push({ content: `[openai error] ${msg}`, done: true }),
@@ -488,17 +514,25 @@ class OpenRouterProvider implements Provider {
                 try {
                     const json = JSON.parse(data);
                     const delta = json.choices?.[0]?.delta;
-                    if (!delta) return;
-                    const tc = delta.tool_calls?.map((t: any) => ({
+                    if (!delta && !json.usage) return;
+                    const tc = delta?.tool_calls?.map((t: any) => ({
                         id: t.id,
                         type: "function" as const,
                         function: { name: t.function?.name ?? "", arguments: t.function?.arguments ?? "" },
                     }));
-                    push({
-                        content: delta.content ?? undefined,
+                    const chunk: StreamChunk = {
+                        content: delta?.content ?? undefined,
                         tool_calls: tc,
                         done: json.choices?.[0]?.finish_reason != null,
-                    });
+                    };
+                    if (json.usage) {
+                        chunk.usage = {
+                            promptTokens: json.usage.prompt_tokens ?? 0,
+                            completionTokens: json.usage.completion_tokens ?? 0,
+                            totalTokens: json.usage.total_tokens ?? 0,
+                        };
+                    }
+                    push(chunk);
                 } catch { /* skip */ }
             },
             (msg) => push({ content: `[openrouter error] ${msg}`, done: true }),
@@ -629,6 +663,18 @@ class AnthropicProvider implements Provider {
                 try {
                     const event = JSON.parse(data);
                     switch (event.type) {
+                        case "message_start":
+                            if (event.message?.usage) {
+                                push({
+                                    done: false,
+                                    usage: {
+                                        promptTokens: event.message.usage.input_tokens ?? 0,
+                                        completionTokens: event.message.usage.output_tokens ?? 0,
+                                        totalTokens: (event.message.usage.input_tokens ?? 0) + (event.message.usage.output_tokens ?? 0),
+                                    },
+                                });
+                            }
+                            break;
                         case "content_block_delta":
                             if (event.delta?.type === "text_delta") {
                                 push({ content: event.delta.text, done: false });
@@ -653,7 +699,15 @@ class AnthropicProvider implements Provider {
                             break;
                         case "message_delta":
                             if (event.delta?.stop_reason) {
-                                push({ done: true });
+                                const chunk: StreamChunk = { done: true };
+                                if (event.usage) {
+                                    chunk.usage = {
+                                        promptTokens: 0,
+                                        completionTokens: event.usage.output_tokens ?? 0,
+                                        totalTokens: event.usage.output_tokens ?? 0,
+                                    };
+                                }
+                                push(chunk);
                             }
                             break;
                     }
@@ -788,7 +842,16 @@ class GoogleProvider implements Provider {
                                 }
                             }
                             if (candidate.finishReason) {
-                                push({ done: true });
+                                const chunk: StreamChunk = { done: true };
+                                const um = json.usageMetadata;
+                                if (um) {
+                                    chunk.usage = {
+                                        promptTokens: um.promptTokenCount ?? 0,
+                                        completionTokens: um.candidatesTokenCount ?? 0,
+                                        totalTokens: um.totalTokenCount ?? 0,
+                                    };
+                                }
+                                push(chunk);
                             }
                         } catch { /* skip */ }
                     }

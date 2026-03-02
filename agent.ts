@@ -12,6 +12,7 @@
 // ─────────────────────────────────────────────────────────────────
 
 import fs from "node:fs/promises";
+import fsSync, { writeFileSync } from "node:fs";
 import { exec } from "node:child_process";
 import { type MCPConnection, type ToolDefinition as MCPToolDef, callMCPTool } from "./mcp-client.js";
 import {
@@ -19,6 +20,7 @@ import {
     type ToolCall,
     type ToolDefinition,
     type StreamChunk,
+    type TokenUsage,
     getProvider,
     DEFAULT_PROVIDER,
 } from "./providers.js";
@@ -42,8 +44,9 @@ export type AgentEvent =
     | { type: "token"; content: string }
     | { type: "tool_start"; name: string; args: Record<string, unknown> }
     | { type: "tool_result"; name: string; result: string }
+    | { type: "usage"; usage: TokenUsage }
     | { type: "error"; message: string }
-    | { type: "done"; fullResponse: string };
+    | { type: "done"; fullResponse: string; messages: ChatMessage[] };
 
 // ── Tool definitions (OpenAI function-calling format) ───────────
 //
@@ -113,31 +116,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
                 required: ["command"],
             },
         },
-    },
-    {
-        type: "function",
-        function: {
-            name: "executeRemoteVPS",
-            description:
-                "Execute a command on a remote VPS host via SSH. " +
-                "Requires the host to be pre-configured in SSH config.",
-            parameters: {
-                type: "object",
-                properties: {
-                    command: {
-                        type: "string",
-                        description: "The shell command to execute on the remote host.",
-                    },
-                    host: {
-                        type: "string",
-                        description:
-                            "SSH host alias or address (e.g. 'prod-1', '10.0.0.5').",
-                    },
-                },
-                required: ["command", "host"],
-            },
-        },
-    },
+    }
 ];
 
 // ── Tool implementations (placeholders) ────────────────────────
@@ -239,7 +218,17 @@ async function dispatchMCPTool(
 
 // ── System prompt ──────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are Parallax, a concise and precise AI assistant running inside a terminal.
+/** Try to read PARALLAX.md from the working directory (best-effort). */
+function readParallaxMd(): string | null {
+    try {
+        return fsSync.readFileSync("PARALLAX.md", "utf-8");
+    } catch {
+        return null;
+    }
+}
+
+function buildSystemPrompt(): string {
+    let prompt = `You are Parallax, a concise and precise AI agentic code assistant running inside a terminal.
 
 Reply directly to the user in plain text. Be conversational for casual messages.
 
@@ -247,7 +236,36 @@ You have tools available, but only use them when the user explicitly asks you to
 
 Keep responses short and direct. Use code blocks for code.
 
-The current date is ${new Date().toLocaleString()}`;
+You are in an agentic loop. You will be given a task, and you will need to use your tools to complete it. You may be given multiple tasks, and you may need to use your tools multiple times to complete them. You should not greet the user, re-introduce yourself, or restart the conversation when you receive a tool result. Instead, continue your original task: interpret the result, and either call another tool or respond to the user with your final answer.
+
+## Tool-calling protocol
+
+You can call tools by emitting a tool_call in your response. After you call a tool, the SYSTEM will execute it and inject the result into the conversation as a message with role "tool". These tool-result messages are NOT from the user — they are automatic system responses containing the output of the tool you invoked. You must NEVER treat tool-result messages as new user requests. Do not greet the user, re-introduce yourself, or restart the conversation when you receive a tool result. Instead, continue your original task: interpret the result, and either call another tool or respond to the user with your final answer.
+
+In summary:
+- Messages with role "user" = the human you are talking to.
+- Messages with role "tool" = system-injected outputs from tools YOU called. Not from the user.
+- After receiving a tool result, continue working — do not treat it as a new conversation turn.
+
+## Information
+You are running on ${process.platform} ${process.arch}
+The current date is ${new Date().toLocaleString()}
+The CWD is ${process.cwd()}
+
+## CRITICAL: Filesystem tool rules
+- NEVER use directory_tree or any recursive directory listing tool. It will dump hundreds of thousands of tokens and destroy the context window.
+- Use list_directory on specific paths instead. Only list the directories you actually need.
+- You can also use list_allowed_directories to see where you are allowed to be/your CWD.
+- NEVER list node_modules, .git, dist, build, or other generated directories.
+- When exploring a project, start with the root directory only (depth 1), then drill into specific subdirectories as needed.`;
+
+    const parallaxMd = readParallaxMd();
+    if (parallaxMd) {
+        prompt += `\n\n## Project Context (from PARALLAX.md)\n\n${parallaxMd}`;
+    }
+
+    return prompt;
+}
 
 // ── Agent orchestration loop ───────────────────────────────────
 //
@@ -270,21 +288,37 @@ export async function* runAgent(
     model: string = DEFAULT_MODEL,
     providerName: string = DEFAULT_PROVIDER,
 ): AsyncGenerator<AgentEvent> {
+
     // ── Resolve the provider ────────────────────────────────────
     const provider = getProvider(providerName);
 
     // ── Collect all tool definitions ────────────────────────────
-    const mcpTools: MCPToolDef[] = mcpConnections.flatMap((c) => c.tools);
-    const allTools: ToolDefinition[] = [...TOOL_DEFINITIONS, ...mcpTools];
+    // When MCP connections are available, prefer MCP tools over the
+    // built-in readLocalFile/patchLocalFile (which are basic fallbacks).
+    // Also filter out directory_tree — it recurses into node_modules
+    // and can dump 300k+ tokens, destroying the context window.
+    const BLOCKED_MCP_TOOLS = ["directory_tree"];
+    const mcpTools: MCPToolDef[] = mcpConnections.flatMap((c) => c.tools)
+        .filter((t) => !BLOCKED_MCP_TOOLS.some((b) => t.function.name.includes(b)));
+    const builtinTools = mcpConnections.length > 0
+        ? TOOL_DEFINITIONS.filter(
+            (t) => !["readLocalFile", "patchLocalFile"].includes(t.function.name),
+        )
+        : TOOL_DEFINITIONS;
+    const allTools: ToolDefinition[] = [...builtinTools, ...mcpTools];
 
     // ── Build the initial message history ──────────────────────
     const messages: ChatMessage[] = [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: buildSystemPrompt() },
         ...history,
         { role: "user", content: prompt },
     ];
 
-    yield { type: "status", message: "reasoning" };
+
+    // DEBUG: dump history
+    // writeFileSync("history.json", JSON.stringify(messages, null, 2));
+
+    yield { type: "status", message: "Working..." };
 
     // ── Agentic loop ───────────────────────────────────────────
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
@@ -303,12 +337,18 @@ export async function* runAgent(
             if (chunk.tool_calls) {
                 toolCalls.push(...chunk.tool_calls);
             }
+
+            // Forward token usage stats
+            if (chunk.usage) {
+                yield { type: "usage", usage: chunk.usage };
+            }
         }
 
         // ── No tool calls → we're done ───────────────────────────
         if (toolCalls.length === 0) {
             messages.push({ role: "assistant", content: fullContent });
-            yield { type: "done", fullResponse: fullContent };
+            // Return messages without the system prompt (index 0)
+            yield { type: "done", fullResponse: fullContent, messages: messages.slice(1) };
             return;
         }
 
@@ -357,13 +397,22 @@ export async function* runAgent(
                 ? await dispatchMCPTool(call.function.name, args, mcpConnections)
                 : await dispatchTool(call.function.name, args);
 
+            // Format the result for display (pass diffs as-is with marker, truncate others)
+            let displayResult: string;
+            const isDiff = result.includes("---") && result.includes("+++") && result.includes("@@");
+            if (isDiff) {
+                // Pass raw diff with a marker so the UI can render it natively
+                displayResult = "__DIFF__" + result;
+            } else {
+                displayResult = result.length > 200
+                    ? result.slice(0, 200) + "… (truncated)"
+                    : result;
+            }
+
             yield {
                 type: "tool_result",
                 name: call.function.name,
-                result:
-                    result.length > 200
-                        ? result.slice(0, 200) + "… (truncated in event)"
-                        : result,
+                result: displayResult,
             };
 
             // Append tool result to history so the LLM can see it
@@ -375,7 +424,7 @@ export async function* runAgent(
         }
 
         // Re-trigger the LLM with the updated history
-        yield { type: "status", message: "reasoning" };
+        yield { type: "status", message: "Working..." };
     }
 
     // Safety: we hit the iteration cap
@@ -383,5 +432,5 @@ export async function* runAgent(
         type: "error",
         message: `hit tool iteration limit (${MAX_TOOL_ITERATIONS})`,
     };
-    yield { type: "done", fullResponse: "" };
+    yield { type: "done", fullResponse: "", messages: messages.slice(1) };
 }
