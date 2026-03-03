@@ -48,6 +48,10 @@ export interface AppContext {
     deleteConversation: (id: string) => Promise<boolean>;
     /** OTP for /deleteall confirmation (getter/setter). */
     deleteAllOtp: { current: string | null };
+    /** Current value for YOLO mode (auto-confirm all tools). */
+    yolo: boolean;
+    /** Toggle YOLO mode. */
+    setYolo: (yolo: boolean) => void;
 }
 
 export interface Command {
@@ -60,6 +64,21 @@ export interface Command {
 // ── Command definitions ────────────────────────────────────────
 
 export const commands: Record<string, Command> = {
+    yolo: {
+        name: "yolo",
+        description: "Toggle YOLO mode (auto-confirm all tool calls)",
+        args: [],
+        action: (ctx) => {
+            const next = !ctx.yolo;
+            ctx.setYolo(next);
+            ctx.addSystemMessage(
+                next
+                    ? "🔥 **YOLO mode ON** — all tool calls will auto-execute without confirmation."
+                    : "🛡️ **YOLO mode OFF** — destructive tools will require confirmation.",
+            );
+        },
+    },
+
     exit: {
         name: "exit",
         description: "Exit the application",

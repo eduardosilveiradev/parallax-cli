@@ -43,7 +43,9 @@ export type AgentEvent =
     | { type: "mcp_status"; message: string }
     | { type: "token"; content: string }
     | { type: "tool_start"; name: string; args: Record<string, unknown> }
+    | { type: "tool_confirm"; name: string; args: Record<string, unknown>; resolve: (approved: boolean) => void }
     | { type: "tool_result"; name: string; result: string }
+    | { type: "injected_messages"; messages: string[] }
     | { type: "usage"; usage: TokenUsage }
     | { type: "error"; message: string }
     | { type: "done"; fullResponse: string; messages: ChatMessage[] };
@@ -281,12 +283,39 @@ The CWD is ${process.cwd()}
 
 const MAX_TOOL_ITERATIONS = 10;
 
+// Tools that are read-only and safe to execute without confirmation.
+// Any tool NOT in this list will require user confirmation (unless YOLO mode).
+const SAFE_TOOLS = new Set([
+    "readLocalFile",
+    // MCP filesystem read-only tools
+    "mcp_filesystem_read_file",
+    "mcp_filesystem_read_multiple_files",
+    "mcp_filesystem_list_directory",
+    "mcp_filesystem_directory_tree",
+    "mcp_filesystem_search_files",
+    "mcp_filesystem_get_file_info",
+    "mcp_filesystem_list_allowed_directories",
+]);
+
+/** Check if a tool name is safe (read-only) and doesn't need confirmation. */
+function isToolSafe(name: string): boolean {
+    if (SAFE_TOOLS.has(name)) return true;
+    // MCP tools: consider list/read/get/search as safe
+    if (name.startsWith("mcp_")) {
+        const stripped = name.replace(/^mcp_[^_]+_/, "");
+        if (/^(read|list|get|search|find|show|describe|info)/.test(stripped)) return true;
+    }
+    return false;
+}
+
 export async function* runAgent(
     prompt: string,
     history: ChatMessage[] = [],
     mcpConnections: MCPConnection[] = [],
     model: string = DEFAULT_MODEL,
     providerName: string = DEFAULT_PROVIDER,
+    isYolo: () => boolean = () => false,
+    getQueuedMessages: () => string[] = () => [],
 ): AsyncGenerator<AgentEvent> {
 
     // ── Resolve the provider ────────────────────────────────────
@@ -363,6 +392,7 @@ export async function* runAgent(
             tool_calls: toolCalls,
         });
 
+        let pendingResolve: ((v: boolean) => void) | null = null;
         for (const call of toolCalls) {
             // Ollama sends arguments as an object; OpenAI sends as a JSON string
             let args: Record<string, unknown>;
@@ -385,6 +415,35 @@ export async function* runAgent(
                 args,
             };
 
+            // ── Confirmation gate for destructive tools ──────────
+            const needsConfirm = !isYolo() && !isToolSafe(call.function.name);
+            if (needsConfirm) {
+                let approved = false;
+                const confirmPromise = new Promise<boolean>((resolve) => {
+                    // We yield the event synchronously (below), then await
+                    // the promise. The UI calls resolve(true/false).
+                    (pendingResolve as any) = resolve;
+                });
+                // Yield confirm event with the resolve callback
+                yield {
+                    type: "tool_confirm",
+                    name: call.function.name,
+                    args,
+                    resolve: (pendingResolve as any),
+                };
+                approved = await confirmPromise;
+                if (!approved) {
+                    const result = "⚠ tool denied by user";
+                    yield { type: "tool_result", name: call.function.name, result };
+                    messages.push({
+                        role: "tool",
+                        content: result,
+                        tool_call_id: call.id,
+                    });
+                    continue;
+                }
+            }
+
             // Determine if this is an MCP tool (prefixed with mcp_)
             const isMCP = call.function.name.startsWith("mcp_");
 
@@ -393,9 +452,15 @@ export async function* runAgent(
                 message: `executing ${call.function.name}`,
             };
 
-            const result = isMCP
-                ? await dispatchMCPTool(call.function.name, args, mcpConnections)
-                : await dispatchTool(call.function.name, args);
+            let result: string;
+            try {
+                result = isMCP
+                    ? await dispatchMCPTool(call.function.name, args, mcpConnections)
+                    : await dispatchTool(call.function.name, args);
+            } catch (toolErr: any) {
+                result = `⚠ error: ${toolErr.message ?? String(toolErr)}`;
+                yield { type: "error", message: `${call.function.name}: ${toolErr.message ?? toolErr}` };
+            }
 
             // Format the result for display (pass diffs as-is with marker, truncate others)
             let displayResult: string;
@@ -421,6 +486,15 @@ export async function* runAgent(
                 content: result,
                 tool_call_id: call.id,
             });
+        }
+
+        // Drain any queued user messages before re-triggering the LLM
+        const queued = getQueuedMessages();
+        if (queued.length > 0) {
+            for (const qMsg of queued) {
+                messages.push({ role: "user", content: qMsg });
+            }
+            yield { type: "injected_messages", messages: queued };
         }
 
         // Re-trigger the LLM with the updated history

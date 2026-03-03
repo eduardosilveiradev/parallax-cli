@@ -4,12 +4,14 @@
 	"description": "An agentic software development assistant",
 	"main": "dist/index.js",
 	"bin": {
-		"parallax": "dist/index.js"
+		"parallax": "dist/index.js",
+		"parallax.cmd": "dist/index.js"
 	},
 	"scripts": {
 		"dev": "tsx index.tsx",
 		"build": "tsc",
-		"start": "node dist/index.js"
+		"start": "node dist/index.js",
+		"install": "pnpm build && pnpm link"
 	},
 	"repository": {
 		"type": "git",
@@ -25,12 +27,14 @@
 	"homepage": "https://github.com/eduardosilveiradev/parallax-cli#readme",
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.27.1",
+		"@types/yargs": "^17.0.35",
 		"chalk": "^5.6.2",
 		"diff": "^8.0.3",
 		"ink": "^6.8.0",
 		"marked": "^15.0.12",
 		"marked-terminal": "^7.3.0",
-		"react": "^19.2.4"
+		"react": "^19.2.4",
+		"yargs": "^18.0.0"
 	},
 	"devDependencies": {
 		"@tsconfig/node-lts": "^24.0.0",

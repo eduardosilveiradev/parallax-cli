@@ -12,6 +12,8 @@ import {
     type MCPServerConfig,
     type MCPConnection,
 } from "./mcp-client.js";
+import yargs from "yargs";
+import { hideBin } from "yargs/helpers";
 import { commands, type AppContext } from "./commands.js";
 import {
     generateId,
@@ -90,7 +92,15 @@ const MCP_SERVER_CONFIGS: MCPServerConfig[] = (() => {
 
 interface ToolActivity {
     name: string;
+    args?: Record<string, unknown>;
     result?: string;
+}
+
+/** Info about a pending tool-confirmation prompt. */
+interface PendingConfirm {
+    name: string;
+    args: Record<string, unknown>;
+    resolve: (approved: boolean) => void;
 }
 
 type DisplayMessage =
@@ -99,19 +109,7 @@ type DisplayMessage =
 
 // ── Components ─────────────────────────────────────────────────
 
-function Header({ model }: { model: string }) {
-    return (
-        <Box
-            borderStyle="round"
-            paddingX={0}
-            paddingY={0}
-            justifyContent="center"
-        >
-            <Text bold>Parallax</Text>
-            <Text dimColor>{"  ·  "}{model}</Text>
-        </Box>
-    );
-}
+
 
 function MessageRow({ msg }: { msg: DisplayMessage }) {
     if (msg.type === "tools") {
@@ -132,9 +130,8 @@ function MessageRow({ msg }: { msg: DisplayMessage }) {
     );
 
     return (
-        <Box flexDirection="column" paddingX={2} marginY={0}>
+        <Box flexDirection="column" paddingX={2} marginY={0} borderStyle="single" borderLeft={true} borderRight={false} borderTop={false} borderBottom={false} borderColor={isAI ? "white" : isSystem ? "grey" : "blue"}>
             <Box flexDirection="row">
-                <Text dimColor color={isAI ? "white" : "grey"}> │ </Text>
                 <Text wrap="wrap" dimColor={!isAI && !isSystem} italic={isSystem}>{rendered}</Text>
             </Box>
             {msg.type === "chat" && msg.tokens != null && msg.tokens > 0 && (
@@ -355,11 +352,27 @@ function DiffView({ raw }: { raw: string }) {
     );
 }
 
-function ToolBadge({ name, result }: { name: string; result?: string }) {
+/** Format tool args into a compact one-liner for display. */
+function formatToolArgs(name: string, args?: Record<string, unknown>): string {
+    if (!args || Object.keys(args).length === 0) return "";
+    // Terminal commands: show command string prominently
+    if (name === "executeTerminalCommand" || name.includes("terminal")) {
+        return String(args["command"] ?? "");
+    }
+    // File operations: show path
+    if (args["path"]) return String(args["path"]);
+    if (args["filename"]) return String(args["filename"]);
+    // Generic: compact JSON
+    const json = JSON.stringify(args);
+    return json.length > 120 ? json.slice(0, 117) + "…" : json;
+}
+
+function ToolBadge({ name, args, result }: { name: string; args?: Record<string, unknown>; result?: string }) {
     const display = toolDisplayName(name);
     const isDiff = result?.startsWith("__DIFF__");
     const diffContent = isDiff ? result!.slice(8) : undefined;
     const cleanResult = isDiff ? undefined : result;
+    const argsStr = formatToolArgs(name, args);
 
     // For diffs, the DiffView already has its own header
     if (diffContent) {
@@ -371,8 +384,33 @@ function ToolBadge({ name, result }: { name: string; result?: string }) {
     }
 
     return (
-        <Box paddingX={4} marginY={0}>
-            <Text><Text color="yellow" bold>● </Text><Text bold>{display}:</Text>  <Text dimColor>{cleanResult ?? ""}</Text></Text>
+        <Box paddingX={4} marginY={0} flexDirection="column">
+            <Text>
+                <Text color="yellow" bold>● </Text>
+                <Text bold>{display}:</Text>
+                {argsStr ? <Text>{"  "}{argsStr}</Text> : null}
+            </Text>
+            {cleanResult ? <Text dimColor>{"      "}{cleanResult}</Text> : null}
+        </Box>
+    );
+}
+
+function ConfirmationPrompt({ name, args }: { name: string; args: Record<string, unknown> }) {
+    const display = toolDisplayName(name);
+    const argsStr = formatToolArgs(name, args);
+    return (
+        <Box paddingX={4} marginY={0} flexDirection="column">
+            <Text>
+                <Text color="yellow" bold>▲ </Text>
+                <Text bold>{display}</Text>
+                {argsStr ? <Text>{"  "}{argsStr}</Text> : null}
+            </Text>
+            <Text dimColor>
+                {"  ⟩ allow? "}
+                <Text bold>(y)</Text>{"es / "}
+                <Text bold>(n)</Text>{"o / "}
+                <Text bold>(a)</Text>{"lways"}
+            </Text>
         </Box>
     );
 }
@@ -387,7 +425,7 @@ function ErrorBanner({ message }: { message: string }) {
     );
 }
 
-function InputLine({ value, disabled }: { value: string; disabled: boolean }) {
+function InputLine({ value, disabled, queueMode }: { value: string; disabled: boolean; queueMode?: boolean }) {
     const lines = value.split("\n");
     return (
         <Box
@@ -402,7 +440,7 @@ function InputLine({ value, disabled }: { value: string; disabled: boolean }) {
             {lines.map((line, i) => (
                 <Box key={i} flexDirection="row">
                     <Text bold={!disabled} dimColor={disabled}>
-                        {i === 0 ? "> " : "  "}
+                        {i === 0 ? (queueMode ? "+ " : "> ") : "  "}
                     </Text>
                     <Text dimColor={disabled}>{line}</Text>
                     {!disabled && i === lines.length - 1 && <Text>▎</Text>}
@@ -412,9 +450,15 @@ function InputLine({ value, disabled }: { value: string; disabled: boolean }) {
     );
 }
 
-// ── App ────────────────────────────────────────────────────────
+interface AppProps {
+    mcpConnections: MCPConnection[];
+    initialModel?: string;
+    initialProvider?: string;
+    initialYolo?: boolean;
+    initialSessionId?: string;
+}
 
-function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
+function App({ mcpConnections, initialModel, initialProvider, initialYolo, initialSessionId }: AppProps) {
     const { exit } = useApp();
     const [messages, setMessages] = useState<DisplayMessage[]>([]);
     const [input, setInput] = useState("");
@@ -424,19 +468,80 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
     const [mcpStatus, setMcpStatus] = useState<string | null>(null);
     const [tools, setTools] = useState<ToolActivity[]>([]);
     const [error, setError] = useState<string | null>(null);
-    const [model, setModel] = useState(DEFAULT_MODEL);
-    const [provider, setProvider] = useState(DEFAULT_PROVIDER);
+    const [model, setModel] = useState(initialModel ?? DEFAULT_MODEL);
+    const [provider, setProvider] = useState(initialProvider ?? DEFAULT_PROVIDER);
+    const [yolo, setYolo] = useState(initialYolo ?? false);
+    const yoloRef = useRef(false);
+    useEffect(() => { yoloRef.current = yolo; }, [yolo]);
+    const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
+
+    // Abort mechanism: Esc sets this to true and calls gen.return()
+    const abortRef = useRef(false);
+    const activeGenRef = useRef<AsyncGenerator<any> | null>(null);
+
+    // Double Ctrl+C to quit
+    const [ctrlCPending, setCtrlCPending] = useState(false);
+    const ctrlCTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const [showCommandPalette, setShowCommandPalette] = useState(false);
     const [selectedIndex, setSelectedIndex] = useState(0);
 
     // Load last-used model from most recent conversation on startup
+    // (only if no CLI override was given)
     useEffect(() => {
-        getLastModel().then((saved) => {
-            if (saved) {
-                setModel(saved.model);
-                setProvider(saved.provider);
-            }
-        });
+        if (!initialModel) {
+            getLastModel().then((saved) => {
+                if (saved) {
+                    setModel(saved.model);
+                    if (!initialProvider) setProvider(saved.provider);
+                }
+            });
+        }
+    }, []);
+
+    // Load initial session if specified via --load
+    useEffect(() => {
+        if (initialSessionId) {
+            loadConv(initialSessionId).then((conv) => {
+                if (conv) {
+                    agentHistory.current = conv.messages;
+                    conversationId.current = conv.id;
+                    createdAt.current = conv.createdAt;
+                    setModel(conv.model);
+                    setProvider(conv.provider);
+                    setTotalTokens(0);
+                    const display: DisplayMessage[] = [];
+                    for (let i = 0; i < conv.messages.length; i++) {
+                        const m = conv.messages[i]!;
+                        if (m.role === "tool") {
+                            let toolName = "tool";
+                            const prev = conv.messages[i - 1];
+                            if (prev?.role === "assistant" && prev.tool_calls) {
+                                const tc = prev.tool_calls.find((tc) => tc.id === m.tool_call_id);
+                                if (tc) toolName = tc.function.name;
+                            }
+                            const isDiff = m.content.includes("---") && m.content.includes("+++") && m.content.includes("@@");
+                            const toolResult = isDiff
+                                ? "__DIFF__" + m.content
+                                : (m.content.length > 200 ? m.content.slice(0, 200) + "…" : m.content);
+                            const lastDisplay = display[display.length - 1];
+                            if (lastDisplay?.type === "tools") {
+                                lastDisplay.activities.push({ name: toolName, result: toolResult });
+                            } else {
+                                display.push({ type: "tools", activities: [{ name: toolName, result: toolResult }] });
+                            }
+                        } else if (m.role === "assistant" && m.tool_calls && !m.content.trim()) {
+                            continue;
+                        } else if (m.role === "assistant" || m.role === "user") {
+                            display.push({ type: "chat", role: m.role, content: m.content, tokens: m.tokens });
+                        }
+                    }
+                    setMessages(display);
+                    addSystemMessage(`Loaded session \`${initialSessionId}\``);
+                } else {
+                    setError(`Session "${initialSessionId}" not found`);
+                }
+            });
+        }
     }, []);
 
     // Model palette state
@@ -497,6 +602,14 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
     const agentHistory = useRef<ChatMessage[]>([]);
     const [totalTokens, setTotalTokens] = useState(0);
 
+    // Message queue: users can type while agent is busy; messages get injected
+    const messageQueue = useRef<string[]>([]);
+    const drainQueue = (): string[] => {
+        const msgs = [...messageQueue.current];
+        messageQueue.current = [];
+        return msgs;
+    };
+
     // Conversation persistence
     const conversationId = useRef(generateId());
     const createdAt = useRef(new Date().toISOString());
@@ -515,11 +628,16 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
         let toolsAccum: ToolActivity[] = [];
         let turnTokens = 0;
 
+        abortRef.current = false;
+        let fullResponse = "";
+
         try {
-            const gen = runAgent(text, agentHistory.current, mcpConnections, model, provider);
-            let fullResponse = "";
+            const gen = runAgent(text, agentHistory.current, mcpConnections, model, provider, () => yoloRef.current, drainQueue);
+            activeGenRef.current = gen;
 
             for await (const event of gen) {
+                // Check abort flag at each iteration
+                if (abortRef.current) break;
                 switch (event.type) {
                     case "status":
                         setStatus(event.message);
@@ -532,8 +650,48 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
                         break;
 
                     case "tool_start":
-                        toolsAccum.push({ name: event.name });
+                        toolsAccum.push({ name: event.name, args: event.args });
                         setTools([...toolsAccum]);
+                        break;
+
+                    case "tool_confirm": {
+                        // Show confirmation prompt and wait for user response
+                        const confirmResult = await new Promise<boolean>((userResolve) => {
+                            setPendingConfirm({
+                                name: event.name,
+                                args: event.args,
+                                resolve: (approved: boolean) => {
+                                    event.resolve(approved);
+                                    userResolve(approved);
+                                },
+                            });
+                        });
+                        setPendingConfirm(null);
+                        if (!confirmResult) {
+                            // Tool was denied — update the tool badge
+                            toolsAccum = toolsAccum.map((t) =>
+                                t.name === event.name && !t.result
+                                    ? { ...t, result: "⚠ denied" }
+                                    : t,
+                            );
+                            setTools([...toolsAccum]);
+                        }
+                        break;
+                    }
+
+                    case "injected_messages":
+                        // Show queued messages in the chat as user messages
+                        setMessages((prev) => [
+                            ...prev,
+                            ...(toolsAccum.length > 0 ? [{ type: "tools" as const, activities: toolsAccum }] : []),
+                            ...event.messages.map((m) => ({
+                                type: "chat" as const,
+                                role: "user" as const,
+                                content: `➤ ${m}`,
+                            })),
+                        ]);
+                        toolsAccum = [];
+                        setTools([]);
                         break;
 
                     case "tool_result":
@@ -561,51 +719,61 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
                         break;
 
                     case "done":
-                        // Persist tool badges + assistant message in correct order
-                        setMessages((prev) => {
-                            const next = [...prev];
-                            if (toolsAccum.length > 0) {
-                                next.push({ type: "tools", activities: toolsAccum });
-                            }
-                            if (event.fullResponse) {
-                                next.push({ type: "chat", role: "assistant", content: event.fullResponse, tokens: turnTokens });
-                            }
-                            return next;
-                        });
-                        setTools([]);
-                        // Use the full message history from the agent (includes tool calls/results)
+                        // Update agent history (the full message list including tool calls)
                         const fullHistory = event.messages;
-                        // Attach token count to the last assistant message
                         const lastMsg = fullHistory[fullHistory.length - 1];
                         if (lastMsg && lastMsg.role === "assistant") {
                             lastMsg.tokens = turnTokens;
                         }
                         agentHistory.current = fullHistory;
-                        // Auto-save to disk (generate title on first exchange)
-                        const isFirstExchange = fullHistory.filter((m) => m.role === "user").length === 1;
-                        const titlePromise = isFirstExchange
-                            ? generateTitle(fullHistory)
-                            : Promise.resolve(deriveTitle(fullHistory));
-                        titlePromise.then((title) =>
-                            saveConversation({
-                                id: conversationId.current,
-                                title,
-                                model,
-                                provider,
-                                createdAt: createdAt.current,
-                                updatedAt: new Date().toISOString(),
-                                messages: fullHistory,
-                            }),
-                        ).catch(() => { /* best-effort */ });
                         break;
                 }
             }
         } catch (err: any) {
             setError(err.message ?? "unexpected error");
         } finally {
+            // Flush any accumulated tools + response into messages so they persist
+            const pendingMessages: DisplayMessage[] = [];
+            if (toolsAccum.length > 0) {
+                pendingMessages.push({ type: "tools", activities: toolsAccum });
+            }
+            if (fullResponse.trim()) {
+                pendingMessages.push({
+                    type: "chat",
+                    role: "assistant",
+                    content: fullResponse,
+                    tokens: turnTokens,
+                });
+            }
+            if (pendingMessages.length > 0) {
+                setMessages((prev) => [...prev, ...pendingMessages]);
+            }
+            setTools([]);
             setStreamContent("");
             setStatus(null);
             setBusy(false);
+            activeGenRef.current = null;
+            abortRef.current = false;
+
+            // Always save conversation to disk (best-effort)
+            const history = agentHistory.current;
+            if (history.length > 0) {
+                const isFirstExchange = history.filter((m) => m.role === "user").length === 1;
+                const titlePromise = isFirstExchange
+                    ? generateTitle(history)
+                    : Promise.resolve(deriveTitle(history));
+                titlePromise.then((title) =>
+                    saveConversation({
+                        id: conversationId.current,
+                        title,
+                        model,
+                        provider,
+                        createdAt: createdAt.current,
+                        updatedAt: new Date().toISOString(),
+                        messages: history,
+                    }),
+                ).catch(() => { /* best-effort */ });
+            }
         }
     };
 
@@ -695,13 +863,15 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
         listConversations: listConvs,
         deleteConversation: deleteConv,
         deleteAllOtp,
+        yolo,
+        setYolo,
     };
 
     // ── Input handling ────────────────────────────────────────
 
     useInput((ch, key) => {
-        if (key.escape || (key.ctrl && ch === "c")) {
-            // Dismiss palettes instead of quitting
+        // ── Escape: dismiss palettes / deny confirm / abort agent ──
+        if (key.escape) {
             if (showModelPalette) {
                 setShowModelPalette(false);
                 setInput("");
@@ -712,11 +882,79 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
                 setInput("");
                 return;
             }
-            appContext.exit();
+            if (pendingConfirm) {
+                pendingConfirm.resolve(false);
+                return;
+            }
+            // Abort the running agent
+            if (busy && activeGenRef.current) {
+                abortRef.current = true;
+                activeGenRef.current.return(undefined);
+                return;
+            }
             return;
         }
 
-        if (busy) return;
+        // ── Ctrl+C: double-press to quit ──────────────────────────
+        if (key.ctrl && ch === "c") {
+            if (ctrlCPending) {
+                if (ctrlCTimer.current) clearTimeout(ctrlCTimer.current);
+                appContext.exit();
+                return;
+            }
+            // First press: abort agent if running, show hint
+            if (busy && activeGenRef.current) {
+                abortRef.current = true;
+                activeGenRef.current.return(undefined);
+            }
+            setCtrlCPending(true);
+            ctrlCTimer.current = setTimeout(() => setCtrlCPending(false), 1500);
+            return;
+        }
+
+        // ── Confirmation prompt input (y/n/a) ─────────────────
+        if (pendingConfirm) {
+            if (ch === "y" || ch === "Y") {
+                pendingConfirm.resolve(true);
+                return;
+            }
+            if (ch === "n" || ch === "N") {
+                pendingConfirm.resolve(false);
+                return;
+            }
+            if (ch === "a" || ch === "A") {
+                setYolo(true);
+                pendingConfirm.resolve(true);
+                return;
+            }
+            // Ignore all other keys during confirmation
+            return;
+        }
+
+        if (busy) {
+            // While busy, allow typing + submitting to queue messages
+            if (key.return && !key.meta) {
+                const text = input.trim();
+                if (text.length > 0) {
+                    messageQueue.current.push(text);
+                    setInput("");
+                    // Show queued message immediately in chat
+                    setMessages((prev) => [
+                        ...prev,
+                        { type: "chat", role: "user", content: `➤ ${text}` },
+                    ]);
+                }
+                return;
+            }
+            if (key.backspace || key.delete) {
+                setInput((prev) => prev.slice(0, -1));
+                return;
+            }
+            if (ch && !key.ctrl && !key.meta) {
+                setInput((prev) => prev + ch);
+            }
+            return;
+        }
 
         // Ctrl+L → open conversation palette
         if (key.ctrl && ch === "l") {
@@ -887,11 +1125,11 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
             setInput((prev) => prev + ch);
         }
     });
+    // Only render the last N messages to avoid terminal flashing on long threads
+    const visibleMessages = messages.slice(-50);
 
     return (
         <Box flexDirection="column" paddingX={2} paddingY={1}>
-            <Header model={model} />
-
             {/* Chat history */}
             <Box flexDirection="column" marginY={1} paddingY={1}>
                 {messages.length === 0 && !busy && (
@@ -899,17 +1137,22 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
                         <Text dimColor>waiting for input</Text>
                     </Box>
                 )}
-                {messages.map((msg, i) => (
-                    <MessageRow key={i} msg={msg} />
+                {visibleMessages.map((msg, i) => (
+                    <MessageRow key={messages.length - visibleMessages.length + i} msg={msg} />
                 ))}
 
                 {/* Tool activity badges (above streaming response) */}
                 {tools.length > 0 && (
                     <Box flexDirection="column" marginY={1}>
                         {tools.map((t, i) => (
-                            <ToolBadge key={i} name={t.name} result={t.result} />
+                            <ToolBadge key={i} name={t.name} args={t.args} result={t.result} />
                         ))}
                     </Box>
+                )}
+
+                {/* Confirmation prompt */}
+                {pendingConfirm && (
+                    <ConfirmationPrompt name={pendingConfirm.name} args={pendingConfirm.args} />
                 )}
 
                 {/* Agent status */}
@@ -925,7 +1168,7 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
             </Box>
 
             {/* Input */}
-            <InputLine value={input} disabled={busy} />
+            <InputLine value={input} disabled={busy && !input} queueMode={busy} />
             {showCommandPalette && filteredCommands.length > 0 && !showModelPalette && (
                 <CommandPalette items={filteredCommands} selectedIndex={selectedIndex} />
             )}
@@ -940,25 +1183,55 @@ function App({ mcpConnections }: { mcpConnections: MCPConnection[] }) {
             <Box marginTop={1} paddingX={2} justifyContent="space-between">
                 <Text dimColor>
                     <Text bold dimColor>enter</Text> send{"  "}
-                    <Text bold dimColor>alt+enter</Text> newline
+                    <Text bold dimColor>esc</Text> stop{"  "}
+                    <Text bold dimColor>alt+enter</Text> newline{"  "}
+                    {ctrlCPending ? (
+                        <Text bold color="red">press ctrl+c again to quit</Text>
+                    ) : (
+                        <><Text bold dimColor>ctrl+c</Text> quit</>
+                    )}
                 </Text>
                 <Text dimColor>
+                    {yolo ? <Text bold color="yellow">YOLO model{" · "}</Text> : ""}
                     {model}{" · "}
-                    {"ctx: "}{formatTokens(totalTokens)}{" · "}
+                    {formatTokens(totalTokens)}{" tokens"}{" · "}
                     {mcpConnections.length > 0
                         ? `${mcpConnections.length} mcp · `
                         : ""}
-                    <Text bold dimColor>esc</Text> quit
                 </Text>
             </Box>
         </Box>
     );
 }
 
-// ── Bootstrap ────────────────────────────────────────────
-// Connect to MCP servers BEFORE mounting the TUI.
+// ── CLI argument parsing (yargs) ───────────────────────────
 
-async function main() {
+async function runShow() {
+    const convos = await listConvs();
+    if (convos.length === 0) {
+        console.log("No saved sessions.");
+        return;
+    }
+    console.log(`\n  ${"ID".padEnd(10)} ${"Updated".padEnd(22)} ${"Model".padEnd(20)} Title`);
+    console.log(`  ${"─".repeat(10)} ${"─".repeat(22)} ${"─".repeat(20)} ${"─".repeat(40)}`);
+    for (const c of convos) {
+        const date = new Date(c.updatedAt).toLocaleString();
+        console.log(`  ${c.id.padEnd(10)} ${date.padEnd(22)} ${c.model.padEnd(20)} ${c.title.slice(0, 50)}`);
+    }
+    console.log();
+}
+
+async function runDelete(id: string) {
+    const ok = await deleteConv(id);
+    if (ok) {
+        console.log(`Deleted session "${id}".`);
+    } else {
+        console.error(`Session "${id}" not found.`);
+        process.exit(1);
+    }
+}
+
+async function runTui(argv: { model?: string; provider?: string; load?: string; yolo: boolean }) {
     const connections: MCPConnection[] = [];
 
     for (const config of MCP_SERVER_CONFIGS) {
@@ -968,14 +1241,75 @@ async function main() {
                 process.stderr.write(`│ ${msg}\r`);
             });
             connections.push(conn);
-            process.stderr.write(`│ ✓ ${config.name} (${conn.tools.length} tools)${" ".repeat(15)}\n`);
+            process.stderr.write(`│ \u2713 ${config.name} (${conn.tools.length} tools)${" ".repeat(15)}\n`);
         } catch (err: any) {
-            process.stderr.write(`│ ✗ ${config.name}: ${err.message}\n`);
+            process.stderr.write(`│ \u2717 ${config.name}: ${err.message}\n`);
         }
     }
 
     process.stderr.write(`\n`);
-    render(<App mcpConnections={connections} />);
+    render(
+        <App
+            mcpConnections={connections}
+            initialModel={argv.model}
+            initialProvider={argv.provider}
+            initialYolo={argv.yolo}
+            initialSessionId={argv.load}
+        />,
+        { exitOnCtrlC: false },
+    );
 }
 
-main();
+// ── CLI ──────────────────────────────────────────────────────
+
+yargs(hideBin(process.argv))
+    .scriptName("parallax")
+    .usage("$0 [command] [options] — Agentic AI coding assistant")
+    .command(
+        "show",
+        "List all saved sessions",
+        () => { },
+        () => { runShow(); },
+    )
+    .command(
+        "delete <id>",
+        "Delete a saved session",
+        (y) => y.positional("id", { type: "string", demandOption: true, describe: "Session ID to delete" }),
+        (argv) => { runDelete(argv.id as string); },
+    )
+    .command(
+        "$0",
+        "Start the interactive TUI",
+        (y) => y
+            .option("model", {
+                alias: "m",
+                type: "string",
+                describe: "Set the model (default: from last session)",
+            })
+            .option("provider", {
+                alias: "p",
+                type: "string",
+                describe: "Set the provider (default: from last session)",
+            })
+            .option("load", {
+                alias: "l",
+                type: "string",
+                describe: "Load a saved session by ID",
+            })
+            .option("yolo", {
+                alias: "y",
+                type: "boolean",
+                default: false,
+                describe: "Start in YOLO mode (auto-confirm all tools)",
+            }),
+        (argv) => { runTui(argv); },
+    )
+    .example("$0", "Launch the TUI")
+    .example("$0 show", "List saved sessions")
+    .example("$0 delete a1b2c3d4", "Delete a session")
+    .example("$0 --model gpt-4o -y", "Launch with GPT-4o in YOLO mode")
+    .help()
+    .alias("h", "help")
+    .version(false)
+    .strict()
+    .parse();
