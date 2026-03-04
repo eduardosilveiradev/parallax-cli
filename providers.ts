@@ -723,11 +723,11 @@ class AnthropicProvider implements Provider {
     async listModels(): Promise<string[]> {
         // Anthropic doesn't have a public models endpoint, return known models
         return [
-            "claude-sonnet-4-20250514",
-            "claude-haiku-4-20250514",
-            "claude-3-5-sonnet-20241022",
-            "claude-3-5-haiku-20241022",
-            "claude-3-opus-20240229",
+            "claude-opus-4-6",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5",
+            "claude-opus-4-5-20251101",
+            "claude-sonnet-4-5-20250929"
         ];
     }
 }
