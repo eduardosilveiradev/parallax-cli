@@ -113,7 +113,7 @@ export const commands: Record<string, Command> = {
 
     model: {
         name: "model",
-        description: "Switch model (/model <name>) or show current",
+        description: "Switch model (/model <name>) or browse all provider models",
         args: ["name?"],
         action: (ctx, args) => {
             if (args.length > 0) {
@@ -121,7 +121,7 @@ export const commands: Record<string, Command> = {
                 ctx.setModel(newModel);
                 ctx.addSystemMessage(`Switched model to **${newModel}**`);
             } else {
-                ctx.addSystemMessage(`Current model: **${ctx.model}**\n\nUse \`/model <name>\` to switch.`);
+                ctx.addSystemMessage(`Current model: **${ctx.model}** (${ctx.provider})\n\nUse \`/model\` to browse all provider models.`);
             }
         },
     },

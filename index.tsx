@@ -5,7 +5,7 @@ import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
 import chalk from "chalk";
 import { runAgent, DEFAULT_MODEL, DEFAULT_PROVIDER, type AgentEvent, type ChatMessage } from "./agent.js";
-import { getProvider } from "./providers.js";
+import { getProvider, listProviders } from "./providers.js";
 import {
     connectToServer,
     disconnectServer,
@@ -196,30 +196,44 @@ function CommandPalette({
     );
 }
 
+interface ProviderModel {
+    provider: string;
+    providerLabel: string;
+    model: string;
+}
+
 function ModelPalette({
     items,
     selectedIndex,
-    provider,
 }: {
-    items: string[];
+    items: ProviderModel[];
     selectedIndex: number;
-    provider: string;
 }) {
+    // Group items by provider for display, preserving order
+    const visible = items.slice(0, 16);
+    let lastProvider = "";
     return (
         <Box paddingX={4} marginY={0} flexDirection="column">
-            <Text dimColor>models from <Text bold>{provider}</Text>:</Text>
-            {items.slice(0, 12).map((name, i) => {
+            <Text dimColor>models from <Text bold>all providers</Text>:</Text>
+            {visible.map((entry, i) => {
                 const selected = i === selectedIndex;
+                const showHeader = entry.provider !== lastProvider;
+                lastProvider = entry.provider;
                 return (
-                    <Box key={name} flexDirection="row">
-                        <Text color={selected ? "white" : "grey"} bold={selected} inverse={selected}>
-                            {" "}{name}{" "}
-                        </Text>
+                    <Box key={`${entry.provider}/${entry.model}`} flexDirection="column">
+                        {showHeader && (
+                            <Text dimColor bold>{"  "}{entry.providerLabel}</Text>
+                        )}
+                        <Box flexDirection="row">
+                            <Text color={selected ? "white" : "grey"} bold={selected} inverse={selected}>
+                                {"   "}{entry.model}{" "}
+                            </Text>
+                        </Box>
                     </Box>
                 );
             })}
-            {items.length > 12 && (
-                <Text dimColor>  …and {items.length - 12} more (type to filter)</Text>
+            {items.length > 16 && (
+                <Text dimColor>  …and {items.length - 16} more (type to filter)</Text>
             )}
         </Box>
     );
@@ -545,7 +559,7 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
     }, []);
 
     // Model palette state
-    const [availableModels, setAvailableModels] = useState<string[]>([]);
+    const [availableModels, setAvailableModels] = useState<ProviderModel[]>([]);
     const [showModelPalette, setShowModelPalette] = useState(false);
     const [modelPaletteIndex, setModelPaletteIndex] = useState(0);
 
@@ -576,21 +590,39 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
         setSelectedIndex(0);
     }, [input, showModelPalette]);
 
-    // Fetch models when provider changes or model palette opens
+    // Fetch models from ALL providers
     useEffect(() => {
         let cancelled = false;
-        getProvider(provider).listModels().then((models) => {
-            if (!cancelled) setAvailableModels(models);
+        const providers = listProviders();
+        Promise.all(
+            providers.map(async (p) => {
+                try {
+                    const models = await p.listModels();
+                    return models.map((m) => ({
+                        provider: p.name,
+                        providerLabel: p.label,
+                        model: m,
+                    }));
+                } catch {
+                    return [];
+                }
+            }),
+        ).then((results) => {
+            if (!cancelled) setAvailableModels(results.flat());
         });
         return () => { cancelled = true; };
-    }, [provider]);
+    }, []);
 
     // Filtered models for the palette (filter by search term after /model )
     const filteredModels = useMemo(() => {
-        if (!showModelPalette) return [];
+        if (!showModelPalette) return [] as ProviderModel[];
         const match = input.match(/^\/model\s*(.*)/i);
         const query = (match?.[1] ?? "").toLowerCase();
-        return availableModels.filter((m) => m.toLowerCase().includes(query));
+        return availableModels.filter((m) =>
+            m.model.toLowerCase().includes(query) ||
+            m.provider.toLowerCase().includes(query) ||
+            m.providerLabel.toLowerCase().includes(query),
+        );
     }, [showModelPalette, input, availableModels]);
 
     // Reset model palette index when filter changes
@@ -1020,8 +1052,9 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
             if (key.tab || key.return) {
                 const selected = filteredModels[modelPaletteIndex];
                 if (selected) {
-                    setModel(selected);
-                    addSystemMessage(`Switched model to **${selected}**`);
+                    setModel(selected.model);
+                    setProvider(selected.provider);
+                    addSystemMessage(`Switched to **${selected.model}** (${selected.providerLabel})`);
                 }
                 setShowModelPalette(false);
                 setInput("");
@@ -1173,7 +1206,7 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
                 <CommandPalette items={filteredCommands} selectedIndex={selectedIndex} />
             )}
             {showModelPalette && filteredModels.length > 0 && (
-                <ModelPalette items={filteredModels} selectedIndex={modelPaletteIndex} provider={provider} />
+                <ModelPalette items={filteredModels} selectedIndex={modelPaletteIndex} />
             )}
             {showConvoPalette && (
                 <ConversationPalette items={convoPaletteItems} selectedIndex={convoPaletteIndex} />
