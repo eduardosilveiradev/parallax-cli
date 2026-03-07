@@ -108,6 +108,7 @@ export const commands: Record<string, Command> = {
         args: [],
         action: (ctx) => {
             ctx.clearMessages();
+            ctx.resetHistory();
         },
     },
 

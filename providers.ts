@@ -543,6 +543,7 @@ class OpenRouterProvider implements Provider {
     }
 
     async listModels(): Promise<string[]> {
+        if (!this.apiKey) return [];
         return new Promise((resolve) => {
             const req = https.request(
                 {

@@ -362,9 +362,39 @@ export async function* runAgent(
                 yield { type: "token", content: chunk.content };
             }
 
-            // Accumulate tool calls (may arrive across multiple chunks)
+            // Accumulate tool calls (may arrive incrementally across chunks
+            // in OpenAI-compatible streaming — same index, partial args)
             if (chunk.tool_calls) {
-                toolCalls.push(...chunk.tool_calls);
+                for (const tc of chunk.tool_calls) {
+                    // If this chunk has an id, it starts a new tool call
+                    if (tc.id) {
+                        toolCalls.push({
+                            id: tc.id,
+                            type: tc.type ?? "function",
+                            function: {
+                                name: tc.function.name ?? "",
+                                arguments: tc.function.arguments ?? "",
+                            },
+                        });
+                    } else if (toolCalls.length > 0) {
+                        // No id → continuation of the last tool call (append name/args fragments)
+                        const last = toolCalls[toolCalls.length - 1]!;
+                        if (tc.function.name) {
+                            last.function.name += tc.function.name;
+                        }
+                        if (tc.function.arguments) {
+                            // Arguments may be a string fragment or an object
+                            if (typeof last.function.arguments === "string" && typeof tc.function.arguments === "string") {
+                                last.function.arguments += tc.function.arguments;
+                            } else {
+                                last.function.arguments = tc.function.arguments;
+                            }
+                        }
+                    } else {
+                        // Edge case: no id and no existing calls — push as-is
+                        toolCalls.push(tc);
+                    }
+                }
             }
 
             // Forward token usage stats

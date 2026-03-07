@@ -5,6 +5,7 @@ import { marked } from "marked";
 import { markedTerminal } from "marked-terminal";
 import chalk from "chalk";
 import { runAgent, DEFAULT_MODEL, DEFAULT_PROVIDER, type AgentEvent, type ChatMessage } from "./agent.js";
+import { Shimmer } from "./Shimmer.js";
 import { getProvider, listProviders } from "./providers.js";
 import {
     connectToServer,
@@ -167,7 +168,7 @@ function StatusLine({ status }: { status: string | null }) {
     if (!status) return null;
     return (
         <Box paddingX={4} marginY={0}>
-            <Text dimColor>{"· "}{status}</Text>
+            <Shimmer text={status} />
         </Box>
     );
 }
@@ -202,6 +203,8 @@ interface ProviderModel {
     model: string;
 }
 
+const MODEL_PALETTE_MAX_VISIBLE = 16;
+
 function ModelPalette({
     items,
     selectedIndex,
@@ -209,16 +212,32 @@ function ModelPalette({
     items: ProviderModel[];
     selectedIndex: number;
 }) {
-    // Group items by provider for display, preserving order
-    const visible = items.slice(0, 16);
-    let lastProvider = "";
+    // Compute a scrolling window around the selected index
+    const total = items.length;
+    const maxVis = MODEL_PALETTE_MAX_VISIBLE;
+    let start = 0;
+    let end = Math.min(total, maxVis);
+
+    if (total > maxVis) {
+        // Centre the selection in the window
+        start = Math.max(0, selectedIndex - Math.floor(maxVis / 2));
+        if (start + maxVis > total) start = total - maxVis;
+        end = start + maxVis;
+    }
+
+    const visible = items.slice(start, end);
     return (
         <Box paddingX={4} marginY={0} flexDirection="column">
             <Text dimColor>models from <Text bold>all providers</Text>:</Text>
+            {start > 0 && (
+                <Text dimColor>  ↑ {start} more above</Text>
+            )}
             {visible.map((entry, i) => {
-                const selected = i === selectedIndex;
-                const showHeader = entry.provider !== lastProvider;
-                lastProvider = entry.provider;
+                const actualIndex = start + i;
+                const selected = actualIndex === selectedIndex;
+                // Show provider header when provider changes (also for the very first visible item)
+                const prevEntry = actualIndex > 0 ? items[actualIndex - 1] : undefined;
+                const showHeader = !prevEntry || entry.provider !== prevEntry.provider;
                 return (
                     <Box key={`${entry.provider}/${entry.model}`} flexDirection="column">
                         {showHeader && (
@@ -232,8 +251,8 @@ function ModelPalette({
                     </Box>
                 );
             })}
-            {items.length > 16 && (
-                <Text dimColor>  …and {items.length - 16} more (type to filter)</Text>
+            {end < total && (
+                <Text dimColor>  ↓ {total - end} more below</Text>
             )}
         </Box>
     );
@@ -1039,13 +1058,13 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
         if (showModelPalette && filteredModels.length > 0) {
             if (key.upArrow) {
                 setModelPaletteIndex((i) =>
-                    i <= 0 ? Math.min(filteredModels.length, 12) - 1 : i - 1,
+                    i <= 0 ? filteredModels.length - 1 : i - 1,
                 );
                 return;
             }
             if (key.downArrow) {
                 setModelPaletteIndex((i) =>
-                    i >= Math.min(filteredModels.length, 12) - 1 ? 0 : i + 1,
+                    i >= filteredModels.length - 1 ? 0 : i + 1,
                 );
                 return;
             }
@@ -1225,7 +1244,7 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
                     )}
                 </Text>
                 <Text dimColor>
-                    {yolo ? <Text bold color="yellow">YOLO model{" · "}</Text> : ""}
+                    {yolo ? <Text bold color="yellow">YOLO mode{" · "}</Text> : ""}
                     {model}{" · "}
                     {formatTokens(totalTokens)}{" tokens"}{" · "}
                     {mcpConnections.length > 0
