@@ -2,6 +2,11 @@ import express from "express";
 import cors from "cors";
 import { runAgent } from "./agent.js";
 import {
+    type MCPConnection,
+    type MCPServerConfig,
+    connectToServer,
+} from "./mcp-client.js";
+import {
     saveConversation,
     generateId,
     deriveTitle,
@@ -13,6 +18,17 @@ import { getProvider, listProviders } from "./providers.js";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 7001;
+
+// ─── MCP ────────────────────────────────────────────────────
+const DEFAULT_MCP_SERVERS: MCPServerConfig[] = [
+    {
+        name: "filesystem",
+        command: "npx",
+        args: ["-y", "@modelcontextprotocol/server-filesystem", process.cwd()],
+    },
+];
+
+let mcpConnections: MCPConnection[] = [];
 
 app.use(cors());
 app.use(express.json());
@@ -67,7 +83,7 @@ app.post("/api/chat", async (req, res) => {
         const gen = runAgent(
             prompt,
             history,
-            [],
+            mcpConnections,
             model,
             provider,
             () => think,
@@ -177,6 +193,30 @@ app.get("/api/models", async (_req, res) => {
 
 
 // ─── Start ──────────────────────────────────────────────────
-app.listen(PORT, () => {
-    console.log(`⚡ Parallax API server running at http://localhost:${PORT}`);
+async function start() {
+    // Connect to MCP servers
+    for (const config of DEFAULT_MCP_SERVERS) {
+        try {
+            console.log(`⏳ Connecting to MCP server: ${config.name}...`);
+            const conn = await connectToServer(config, (msg) => {
+                console.log(`  MCP: ${msg}`);
+            });
+            mcpConnections.push(conn);
+            console.log(`✓ ${config.name} (${conn.tools.length} tools)`);
+        } catch (err: any) {
+            console.error(`✗ ${config.name}: ${err.message}`);
+        }
+    }
+
+    app.listen(PORT, () => {
+        console.log(`⚡ Parallax API server running at http://localhost:${PORT}`);
+        if (mcpConnections.length > 0) {
+            console.log(`  MCP: ${mcpConnections.length} server(s) connected`);
+        }
+    });
+}
+
+start().catch((err) => {
+    console.error("Failed to start:", err);
+    process.exit(1);
 });

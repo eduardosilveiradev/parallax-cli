@@ -387,6 +387,7 @@ export async function* runAgent(
     // ── Agentic loop ───────────────────────────────────────────
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
         let fullContent = "";
+        let fullReasoning = "";
         let toolCalls: ToolCall[] = [];
 
         // Stream via the provider
@@ -399,6 +400,7 @@ export async function* runAgent(
 
             // Stream reasoning/thinking tokens
             if (chunk.reasoning) {
+                fullReasoning += chunk.reasoning;
                 yield { type: "reasoning", content: chunk.reasoning };
             }
 
@@ -445,7 +447,7 @@ export async function* runAgent(
 
         // ── No tool calls → we're done ───────────────────────────
         if (toolCalls.length === 0) {
-            messages.push({ role: "assistant", content: fullContent });
+            messages.push({ role: "assistant", content: fullContent, ...(fullReasoning ? { reasoning: fullReasoning } : {}) });
             // Return messages without the system prompt (index 0)
             yield { type: "done", fullResponse: fullContent, messages: messages.slice(1) };
             return;
