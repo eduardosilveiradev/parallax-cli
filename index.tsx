@@ -105,14 +105,14 @@ interface PendingConfirm {
 }
 
 type DisplayMessage =
-    | { type: "chat"; role: "user" | "assistant" | "system"; content: string; tokens?: number }
+    | { type: "chat"; role: "user" | "assistant" | "system"; content: string; tokens?: number; reasoning?: string }
     | { type: "tools"; activities: ToolActivity[] };
 
 // ── Components ─────────────────────────────────────────────────
 
 
 
-function MessageRow({ msg }: { msg: DisplayMessage }) {
+function MessageRow({ msg, showReasoning }: { msg: DisplayMessage; showReasoning: boolean }) {
     if (msg.type === "tools") {
         return (
             <Box flexDirection="column" marginY={0}>
@@ -132,6 +132,9 @@ function MessageRow({ msg }: { msg: DisplayMessage }) {
 
     return (
         <Box flexDirection="column" paddingX={2} marginY={0} borderStyle="single" borderLeft={true} borderRight={false} borderTop={false} borderBottom={false} borderColor={isAI ? "white" : isSystem ? "grey" : "blue"}>
+            {msg.type === "chat" && msg.reasoning && (
+                <ReasoningBlock content={msg.reasoning} expanded={showReasoning} />
+            )}
             <Box flexDirection="row">
                 <Text wrap="wrap" dimColor={!isAI && !isSystem} italic={isSystem}>{rendered}</Text>
             </Box>
@@ -139,6 +142,29 @@ function MessageRow({ msg }: { msg: DisplayMessage }) {
                 <Box flexDirection="row">
                     <Text dimColor color="grey">   </Text>
                     <Text dimColor>{formatTokens(msg.tokens)} tokens</Text>
+                </Box>
+            )}
+        </Box>
+    );
+}
+
+function ReasoningBlock({ content, streaming, expanded }: { content: string; streaming?: boolean; expanded?: boolean }) {
+    const lines = content.split("\n");
+    const preview = lines[0]?.slice(0, 80) ?? "";
+    const isOpen = streaming || expanded;
+
+    if (!content.trim()) return null;
+
+    return (
+        <Box flexDirection="column" marginBottom={0}>
+            <Text dimColor italic>
+                {"💭 "}
+                <Text bold dimColor>{streaming ? "Thinking..." : "Reasoning"}</Text>
+                {!streaming && <Text dimColor>{isOpen ? " ▾" : " ▸ "}{!isOpen && preview}{!isOpen && (content.length > 80 ? "…" : "")}</Text>}
+            </Text>
+            {isOpen && (
+                <Box paddingLeft={3} flexDirection="column">
+                    <Text dimColor italic wrap="wrap">{content}</Text>
                 </Box>
             )}
         </Box>
@@ -168,7 +194,7 @@ function StatusLine({ status }: { status: string | null }) {
     if (!status) return null;
     return (
         <Box paddingX={4} marginY={0}>
-            <Shimmer text={status} />
+            <Shimmer animate={status !== "Done"} text={status} />
         </Box>
     );
 }
@@ -423,7 +449,18 @@ function ToolBadge({ name, args, result }: { name: string; args?: Record<string,
                 <Text bold>{display}:</Text>
                 {argsStr ? <Text>{"  "}{argsStr}</Text> : null}
             </Text>
-            {cleanResult ? <Text dimColor>{"      "}{cleanResult}</Text> : null}
+            {cleanResult ? (() => {
+                const lines = cleanResult.split("\n");
+                const maxLines = 20;
+                const truncated = lines.length > maxLines;
+                const shown = truncated ? lines.slice(0, maxLines).join("\n") : cleanResult;
+                return (
+                    <>
+                        <Text dimColor>{"      "}{shown}</Text>
+                        {truncated && <Text dimColor italic>{"      "}(+{lines.length - maxLines} more lines)</Text>}
+                    </>
+                );
+            })() : null}
         </Box>
     );
 }
@@ -458,8 +495,30 @@ function ErrorBanner({ message }: { message: string }) {
     );
 }
 
-function InputLine({ value, disabled, queueMode }: { value: string; disabled: boolean; queueMode?: boolean }) {
+function InputLine({ value, cursorPos, disabled, queueMode }: { value: string; cursorPos: number; disabled: boolean; queueMode?: boolean }) {
+    const [showCursor, setShowCursor] = useState(true);
+    useEffect(() => {
+        const interval = setInterval(() => {
+            setShowCursor((prev) => !prev);
+        }, 500);
+        return () => clearInterval(interval);
+    }, []);
+
+    // For multi-line, figure out which line the cursor is on
     const lines = value.split("\n");
+    let charCount = 0;
+    let cursorLine = lines.length - 1;
+    let cursorCol = 0;
+    for (let i = 0; i < lines.length; i++) {
+        const lineLen = lines[i]!.length;
+        if (cursorPos <= charCount + lineLen) {
+            cursorLine = i;
+            cursorCol = cursorPos - charCount;
+            break;
+        }
+        charCount += lineLen + 1; // +1 for newline
+    }
+
     return (
         <Box
             borderStyle="single"
@@ -470,15 +529,28 @@ function InputLine({ value, disabled, queueMode }: { value: string; disabled: bo
             paddingY={0}
             flexDirection="column"
         >
-            {lines.map((line, i) => (
-                <Box key={i} flexDirection="row">
-                    <Text bold={!disabled} dimColor={disabled}>
-                        {i === 0 ? (queueMode ? "+ " : "> ") : "  "}
-                    </Text>
-                    <Text dimColor={disabled}>{line}</Text>
-                    {!disabled && i === lines.length - 1 && <Text>▎</Text>}
-                </Box>
-            ))}
+            {lines.map((line, i) => {
+                const isCursorLine = !disabled && i === cursorLine;
+                const before = isCursorLine ? line.slice(0, cursorCol) : line;
+                const after = isCursorLine ? line.slice(cursorCol) : "";
+                const cursorChar = after.length > 0 ? after[0] : " ";
+                const rest = after.length > 0 ? after.slice(1) : "";
+                return (
+                    <Box key={i} flexDirection="row">
+                        <Text bold={!disabled} dimColor={disabled}>
+                            {i === 0 ? (queueMode ? "+ " : "> ") : "  "}
+                        </Text>
+                        <Text dimColor={disabled}>{before}</Text>
+                        {isCursorLine && (
+                            <Text inverse={showCursor}>{cursorChar}</Text>
+                        )}
+                        {isCursorLine && rest && (
+                            <Text dimColor={disabled}>{rest}</Text>
+                        )}
+                        {!isCursorLine && null}
+                    </Box>
+                );
+            })}
         </Box>
     );
 }
@@ -495,8 +567,10 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
     const { exit } = useApp();
     const [messages, setMessages] = useState<DisplayMessage[]>([]);
     const [input, setInput] = useState("");
+    const [cursorPos, setCursorPos] = useState(0);
     const [busy, setBusy] = useState(false);
     const [streamContent, setStreamContent] = useState("");
+    const [reasoningContent, setReasoningContent] = useState("");
     const [status, setStatus] = useState<string | null>(null);
     const [mcpStatus, setMcpStatus] = useState<string | null>(null);
     const [tools, setTools] = useState<ToolActivity[]>([]);
@@ -504,6 +578,7 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
     const [model, setModel] = useState(initialModel ?? DEFAULT_MODEL);
     const [provider, setProvider] = useState(initialProvider ?? DEFAULT_PROVIDER);
     const [yolo, setYolo] = useState(initialYolo ?? false);
+    const [showReasoning, setShowReasoning] = useState(false);
     const yoloRef = useRef(false);
     useEffect(() => { yoloRef.current = yolo; }, [yolo]);
     const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm | null>(null);
@@ -565,7 +640,7 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
                         } else if (m.role === "assistant" && m.tool_calls && !m.content.trim()) {
                             continue;
                         } else if (m.role === "assistant" || m.role === "user") {
-                            display.push({ type: "chat", role: m.role, content: m.content, tokens: m.tokens });
+                            display.push({ type: "chat", role: m.role, content: m.content, tokens: m.tokens, reasoning: m.reasoning });
                         }
                     }
                     setMessages(display);
@@ -670,7 +745,8 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
         setMessages((prev) => [...prev, { type: "chat", role: "user", content: text }]);
         setBusy(true);
         setStreamContent("");
-        setStatus(null);
+        setReasoningContent("");
+        setStatus("Initializing...");
         setMcpStatus(null);
         setTools([]);
         setError(null);
@@ -681,6 +757,7 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
 
         abortRef.current = false;
         let fullResponse = "";
+        let reasoningAccum = "";
 
         try {
             const gen = runAgent(text, agentHistory.current, mcpConnections, model, provider, () => yoloRef.current, drainQueue);
@@ -698,6 +775,11 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
                         fullResponse += event.content;
                         setStreamContent(fullResponse);
                         setStatus(null);
+                        break;
+
+                    case "reasoning":
+                        reasoningAccum += event.content;
+                        setReasoningContent(reasoningAccum);
                         break;
 
                     case "tool_start":
@@ -775,8 +857,25 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
                         const lastMsg = fullHistory[fullHistory.length - 1];
                         if (lastMsg && lastMsg.role === "assistant") {
                             lastMsg.tokens = turnTokens;
+                            if (reasoningAccum) {
+                                lastMsg.reasoning = reasoningAccum;
+                            }
                         }
                         agentHistory.current = fullHistory;
+                        break;
+
+                    case "checkpoint":
+                        // Save session state after each tool loop
+                        agentHistory.current = event.messages;
+                        saveConversation({
+                            id: conversationId.current,
+                            title: deriveTitle(event.messages),
+                            model,
+                            provider,
+                            createdAt: createdAt.current,
+                            updatedAt: new Date().toISOString(),
+                            messages: event.messages,
+                        }).catch(() => { /* best-effort */ });
                         break;
                 }
             }
@@ -794,6 +893,7 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
                     role: "assistant",
                     content: fullResponse,
                     tokens: turnTokens,
+                    reasoning: reasoningAccum || undefined,
                 });
             }
             if (pendingMessages.length > 0) {
@@ -801,7 +901,8 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
             }
             setTools([]);
             setStreamContent("");
-            setStatus(null);
+            setReasoningContent("");
+            setStatus("Done");
             setBusy(false);
             activeGenRef.current = null;
             abortRef.current = false;
@@ -904,6 +1005,7 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
                         role: m.role,
                         content: m.content,
                         tokens: m.tokens,
+                        reasoning: m.reasoning,
                     });
                 }
                 // Skip system messages (they're the system prompt)
@@ -926,11 +1028,13 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
             if (showModelPalette) {
                 setShowModelPalette(false);
                 setInput("");
+                setCursorPos(0);
                 return;
             }
             if (showConvoPalette) {
                 setShowConvoPalette(false);
                 setInput("");
+                setCursorPos(0);
                 return;
             }
             if (pendingConfirm) {
@@ -963,6 +1067,12 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
             return;
         }
 
+        // ── Ctrl+O: toggle reasoning visibility ────────────────
+        if (key.ctrl && ch === "o") {
+            setShowReasoning((prev) => !prev);
+            return;
+        }
+
         // ── Confirmation prompt input (y/n/a) ─────────────────
         if (pendingConfirm) {
             if (ch === "y" || ch === "Y") {
@@ -989,6 +1099,7 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
                 if (text.length > 0) {
                     messageQueue.current.push(text);
                     setInput("");
+                    setCursorPos(0);
                     // Show queued message immediately in chat
                     setMessages((prev) => [
                         ...prev,
@@ -998,11 +1109,15 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
                 return;
             }
             if (key.backspace || key.delete) {
-                setInput((prev) => prev.slice(0, -1));
+                setInput((prev) => prev.slice(0, cursorPos - 1) + prev.slice(cursorPos));
+                setCursorPos((p) => Math.max(0, p - 1));
                 return;
             }
+            if (key.leftArrow) { setCursorPos((p) => Math.max(0, p - 1)); return; }
+            if (key.rightArrow) { setCursorPos((p) => Math.min(input.length, p + 1)); return; }
             if (ch && !key.ctrl && !key.meta) {
-                setInput((prev) => prev + ch);
+                setInput((prev) => prev.slice(0, cursorPos) + ch + prev.slice(cursorPos));
+                setCursorPos((p) => p + ch.length);
             }
             return;
         }
@@ -1077,6 +1192,7 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
                 }
                 setShowModelPalette(false);
                 setInput("");
+                setCursorPos(0);
                 return;
             }
         }
@@ -1098,7 +1214,10 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
             // Tab to autocomplete the selected command
             if (key.tab) {
                 const [cmdKey] = filteredCommands[selectedIndex] ?? [];
-                if (cmdKey) setInput(`/${cmdKey}`);
+                if (cmdKey) {
+                    setInput(`/${cmdKey}`);
+                    setCursorPos(`/${cmdKey}`.length);
+                }
                 return;
             }
         }
@@ -1106,13 +1225,15 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
         if (key.return) {
             // Alt+Enter fallback for non-Kitty terminals
             if (key.meta) {
-                setInput((prev) => prev + "\n");
+                setInput((prev) => prev.slice(0, cursorPos) + "\n" + prev.slice(cursorPos));
+                setCursorPos((p) => p + 1);
                 return;
             }
 
             if (input.trim().length === 0) return;
             const text = input.trim();
             setInput("");
+            setCursorPos(0);
 
             // ── Slash-command dispatch ────────────────────────
             if (text.startsWith("/")) {
@@ -1127,12 +1248,14 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
                     if (cmdKey === "model") {
                         setShowModelPalette(true);
                         setInput("/model ");
+                        setCursorPos("/model ".length);
                         return;
                     }
                     // Special handling for /load — open conversation palette
                     if (cmdKey === "load") {
                         openConvoPalette();
                         setInput("");
+                        setCursorPos(0);
                         return;
                     }
                     cmd.action(appContext, []);
@@ -1148,12 +1271,14 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
                         if (cmdKey === "model" && cmdArgs.length === 0) {
                             setShowModelPalette(true);
                             setInput("/model ");
+                            setCursorPos("/model ".length);
                             return;
                         }
                         // /load with no args → open conversation palette
                         if (cmdKey === "load" && cmdArgs.length === 0) {
                             openConvoPalette();
                             setInput("");
+                            setCursorPos(0);
                             return;
                         }
                         cmd.action(appContext, cmdArgs);
@@ -1169,16 +1294,43 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
         }
 
         if (key.backspace || key.delete) {
-            setInput((prev) => prev.slice(0, -1));
+            if (cursorPos > 0) {
+                setInput((prev) => prev.slice(0, cursorPos - 1) + prev.slice(cursorPos));
+                setCursorPos((p) => p - 1);
+            }
+            return;
+        }
+
+        // Arrow keys for cursor movement
+        if (key.leftArrow) {
+            setCursorPos((p) => Math.max(0, p - 1));
+            return;
+        }
+        if (key.rightArrow) {
+            setCursorPos((p) => Math.min(input.length, p + 1));
+            return;
+        }
+
+        // Home / End (Ctrl+A / Ctrl+E or Home/End keys)
+        if ((key.ctrl && ch === "a") || ch === "\x1b[H" || ch === "\x1b[1~") {
+            setCursorPos(0);
+            return;
+        }
+        if ((key.ctrl && ch === "e") || ch === "\x1b[F" || ch === "\x1b[4~") {
+            setCursorPos(input.length);
             return;
         }
 
         if (ch && !key.ctrl && !key.meta) {
-            setInput((prev) => prev + ch);
+            setInput((prev) => prev.slice(0, cursorPos) + ch + prev.slice(cursorPos));
+            setCursorPos((p) => p + ch.length);
         }
     });
     // Only render the last N messages to avoid terminal flashing on long threads
-    const visibleMessages = messages.slice(-50);
+    // Limit visible messages to fit terminal height (rough estimate: ~3 lines per message)
+    const termRows = process.stdout.rows ?? 40;
+    const maxMessages = Math.max(5, Math.floor((termRows - 10) / 3));
+    const visibleMessages = messages.slice(-maxMessages);
 
     return (
         <Box flexDirection="column" paddingX={2} paddingY={1}>
@@ -1186,11 +1338,11 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
             <Box flexDirection="column" marginY={1} paddingY={1}>
                 {messages.length === 0 && !busy && (
                     <Box paddingX={4}>
-                        <Text dimColor>waiting for input</Text>
+                        <Text dimColor>Send a message to begin</Text>
                     </Box>
                 )}
                 {visibleMessages.map((msg, i) => (
-                    <MessageRow key={messages.length - visibleMessages.length + i} msg={msg} />
+                    <MessageRow key={messages.length - visibleMessages.length + i} msg={msg} showReasoning={showReasoning} />
                 ))}
 
                 {/* Tool activity badges (above streaming response) */}
@@ -1212,6 +1364,9 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
                 <StatusLine status={mcpStatus} />
 
                 {/* Streaming response (below tools) */}
+                {busy && reasoningContent && (
+                    <ReasoningBlock content={reasoningContent} streaming={!streamContent} />
+                )}
                 {busy && streamContent && (
                     <StreamingRow content={streamContent} />
                 )}
@@ -1220,7 +1375,7 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
             </Box>
 
             {/* Input */}
-            <InputLine value={input} disabled={busy && !input} queueMode={busy} />
+            <InputLine value={input} cursorPos={cursorPos} disabled={busy && !input} queueMode={busy} />
             {showCommandPalette && filteredCommands.length > 0 && !showModelPalette && (
                 <CommandPalette items={filteredCommands} selectedIndex={selectedIndex} />
             )}
@@ -1233,15 +1388,17 @@ function App({ mcpConnections, initialModel, initialProvider, initialYolo, initi
 
             {/* Status bar */}
             <Box marginTop={1} paddingX={2} justifyContent="space-between">
-                <Text dimColor>
-                    <Text bold dimColor>enter</Text> send{"  "}
-                    <Text bold dimColor>esc</Text> stop{"  "}
-                    <Text bold dimColor>alt+enter</Text> newline{"  "}
+                <Text>
+                    <Text bold color="gray">enter</Text> send{"  "}
+                    <Text bold color="gray">esc</Text> stop{"  "}
+                    <Text bold color="gray">alt+enter</Text> newline{"  "}
                     {ctrlCPending ? (
                         <Text bold color="red">press ctrl+c again to quit</Text>
                     ) : (
-                        <><Text bold dimColor>ctrl+c</Text> quit</>
+                        <><Text bold color="gray">ctrl+c</Text> quit</>
                     )}
+                    {"  "}
+                    <Text bold color="gray">ctrl+o</Text> verbose mode
                 </Text>
                 <Text dimColor>
                     {yolo ? <Text bold color="yellow">YOLO mode{" · "}</Text> : ""}
@@ -1299,8 +1456,11 @@ async function runTui(argv: { model?: string; provider?: string; load?: string; 
         }
     }
 
-    process.stderr.write(`\n`);
-    render(
+    // Enter alternate screen buffer to prevent scroll flicker
+    process.stdout.write("\x1b[?1049h");
+    process.stdout.write("\x1b[H"); // Move cursor to top-left
+
+    const inkInstance = render(
         <App
             mcpConnections={connections}
             initialModel={argv.model}
@@ -1310,6 +1470,11 @@ async function runTui(argv: { model?: string; provider?: string; load?: string; 
         />,
         { exitOnCtrlC: false },
     );
+
+    // Exit alternate screen buffer on cleanup
+    inkInstance.waitUntilExit().then(() => {
+        process.stdout.write("\x1b[?1049l");
+    });
 }
 
 // ── CLI ──────────────────────────────────────────────────────

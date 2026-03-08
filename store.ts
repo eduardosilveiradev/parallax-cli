@@ -9,6 +9,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
+import { nanoid } from "nanoid";
 import type { ChatMessage } from "./providers.js";
 
 // ── Types ──────────────────────────────────────────────────────
@@ -43,7 +44,7 @@ const CONVERSATIONS_DIR = path.join(PARALLAX_DIR, "conversations");
 
 /** Generate a short random conversation ID (8 hex chars). */
 export function generateId(): string {
-    return crypto.randomBytes(4).toString("hex");
+    return nanoid(12);
 }
 
 /** Derive a title from the first user message (truncated fallback). */

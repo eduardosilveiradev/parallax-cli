@@ -13,6 +13,8 @@ type RGB = [number, number, number];
 export interface ShimmerProps {
     /** The text to shimmer (the ◆ prefix is added automatically) */
     text?: string;
+    /** Whether to animate the shimmer */
+    animate?: boolean;
     /** Resting text color */
     baseColor?: RGB;
     /** Mid-glow shimmer color */
@@ -60,6 +62,7 @@ function colorForChar(
 
 export function Shimmer({
     text = "Working...",
+    animate = true,
     baseColor = [80, 80, 100],
     shimmerColor = [52, 116, 235],
     peakColor = [255, 255, 255],
@@ -79,7 +82,7 @@ export function Shimmer({
 
     const display = `◆  ${text}`;
     const totalTravel = display.length + width * 2;
-    const phase = (((tick * speed) % 1.0) + 1.0) % 1.0;
+    const phase = animate ? (((tick * speed) % 1.0) + 1.0) % 1.0 : 0;
     const center = phase * totalTravel - width;
 
     const chars = [...display].map((ch, i) => {

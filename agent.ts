@@ -42,9 +42,11 @@ export type AgentEvent =
     | { type: "status"; message: string }
     | { type: "mcp_status"; message: string }
     | { type: "token"; content: string }
+    | { type: "reasoning"; content: string }
     | { type: "tool_start"; name: string; args: Record<string, unknown> }
     | { type: "tool_confirm"; name: string; args: Record<string, unknown>; resolve: (approved: boolean) => void }
     | { type: "tool_result"; name: string; result: string }
+    | { type: "checkpoint"; messages: ChatMessage[] }
     | { type: "injected_messages"; messages: string[] }
     | { type: "usage"; usage: TokenUsage }
     | { type: "error"; message: string }
@@ -61,14 +63,23 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
         function: {
             name: "readLocalFile",
             description:
-                "Read the full contents of a file on the local filesystem. " +
-                "Returns the file content as a UTF-8 string.",
+                "Read the contents of a file on the local filesystem. " +
+                "Returns up to `limit` lines starting from `offset`. " +
+                "Use offset to paginate through large files.",
             parameters: {
                 type: "object",
                 properties: {
                     path: {
                         type: "string",
                         description: "Absolute or relative path to the target file.",
+                    },
+                    offset: {
+                        type: "number",
+                        description: "Starting line number (0-indexed). Default: 0.",
+                    },
+                    limit: {
+                        type: "number",
+                        description: "Maximum number of lines to return. Default: 200.",
                     },
                 },
                 required: ["path"],
@@ -127,10 +138,30 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 // the message history as a tool-role message. Swap these out
 // with real implementations as the CLI matures.
 
-async function readLocalFile(path: string): Promise<string> {
+const MAX_FILE_LINES = 200;
+
+async function readLocalFile(path: string, offset: number = 0, limit: number = MAX_FILE_LINES): Promise<string> {
     try {
         const content = await fs.readFile(path, "utf-8");
-        return content;
+        const allLines = content.split("\n");
+        const totalLines = allLines.length;
+
+        // If the file fits within the limit, return everything
+        if (totalLines <= limit && offset === 0) {
+            return content;
+        }
+
+        // Paginate
+        const page = allLines.slice(offset, offset + limit);
+        const endLine = Math.min(offset + limit, totalLines);
+        let result = page.join("\n");
+
+        // Add pagination metadata
+        result += `\n\n--- Showing lines ${offset + 1}-${endLine} of ${totalLines} total ---`;
+        if (endLine < totalLines) {
+            result += `\n--- Use offset=${endLine} to read the next page ---`;
+        }
+        return result;
     } catch (err: any) {
         return `error: could not read file — ${err.message}`;
     }
@@ -179,7 +210,11 @@ async function dispatchTool(
 ): Promise<string> {
     switch (name) {
         case "readLocalFile":
-            return readLocalFile(args["path"] as string);
+            return readLocalFile(
+                args["path"] as string,
+                (args["offset"] as number) ?? 0,
+                (args["limit"] as number) ?? MAX_FILE_LINES,
+            );
 
         case "patchLocalFile":
             return patchLocalFile(args["path"] as string, args["diff"] as string);
@@ -362,6 +397,11 @@ export async function* runAgent(
                 yield { type: "token", content: chunk.content };
             }
 
+            // Stream reasoning/thinking tokens
+            if (chunk.reasoning) {
+                yield { type: "reasoning", content: chunk.reasoning };
+            }
+
             // Accumulate tool calls (may arrive incrementally across chunks
             // in OpenAI-compatible streaming — same index, partial args)
             if (chunk.tool_calls) {
@@ -510,10 +550,14 @@ export async function* runAgent(
                 result: displayResult,
             };
 
-            // Append tool result to history so the LLM can see it
+            // Append tool result to history (capped to prevent context blowout)
+            const MAX_TOOL_RESULT_CHARS = 10_000;
+            const cappedResult = result.length > MAX_TOOL_RESULT_CHARS
+                ? result.slice(0, MAX_TOOL_RESULT_CHARS) + `\n\n--- Output truncated (${result.length} chars total, showing first ${MAX_TOOL_RESULT_CHARS}) ---`
+                : result;
             messages.push({
                 role: "tool",
-                content: result,
+                content: cappedResult,
                 tool_call_id: call.id,
             });
         }
@@ -526,6 +570,9 @@ export async function* runAgent(
             }
             yield { type: "injected_messages", messages: queued };
         }
+
+        // Checkpoint: save session state after each tool loop
+        yield { type: "checkpoint", messages: messages.slice(1) };
 
         // Re-trigger the LLM with the updated history
         yield { type: "status", message: "Working..." };

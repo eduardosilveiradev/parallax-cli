@@ -20,6 +20,8 @@ export interface ChatMessage {
     tool_call_id?: string;
     /** Completion tokens for this message (persisted, not sent to API). */
     tokens?: number;
+    /** Reasoning/thinking content (persisted, not sent to API). */
+    reasoning?: string;
 }
 
 export interface ToolCall {
@@ -51,11 +53,14 @@ export interface TokenUsage {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    reasoningTokens?: number;
 }
 
 export interface StreamChunk {
     /** Text content token (may be empty). */
     content?: string;
+    /** Reasoning/thinking content token (may be empty). */
+    reasoning?: string;
     /** Tool calls emitted by the model (accumulated per chunk). */
     tool_calls?: ToolCall[];
     /** True when the model has finished generating. */
@@ -104,12 +109,15 @@ class OllamaProvider implements Provider {
         messages: ChatMessage[],
         model: string,
         tools: ToolDefinition[],
+        think: boolean = true,
     ): AsyncIterable<StreamChunk> {
+        console.log("OllamaProvider.stream", model, tools);
         const payload = JSON.stringify({
             model,
             messages,
             tools: tools.length > 0 ? tools : undefined,
             stream: true,
+            think: think,
         });
 
         return {
@@ -176,7 +184,8 @@ class OllamaProvider implements Provider {
                                     const json = JSON.parse(line);
                                     // Normalize Ollama's shape → StreamChunk
                                     const sc: StreamChunk = {
-                                        content: json.message?.content,
+                                        content: json.message?.content || undefined,
+                                        reasoning: json.message?.thinking || undefined,
                                         tool_calls: json.message?.tool_calls,
                                         done: json.done,
                                     };
@@ -418,6 +427,7 @@ class OpenAIProvider implements Provider {
                     }));
                     const chunk: StreamChunk = {
                         content: delta?.content ?? undefined,
+                        reasoning: delta?.reasoning_content ?? undefined,
                         tool_calls: tc,
                         done: json.choices?.[0]?.finish_reason != null,
                     };
@@ -426,6 +436,7 @@ class OpenAIProvider implements Provider {
                             promptTokens: json.usage.prompt_tokens ?? 0,
                             completionTokens: json.usage.completion_tokens ?? 0,
                             totalTokens: json.usage.total_tokens ?? 0,
+                            reasoningTokens: json.usage.completion_tokens_details?.reasoning_tokens ?? undefined,
                         };
                     }
                     push(chunk);
@@ -522,6 +533,7 @@ class OpenRouterProvider implements Provider {
                     }));
                     const chunk: StreamChunk = {
                         content: delta?.content ?? undefined,
+                        reasoning: delta?.reasoning_content ?? delta?.reasoning ?? undefined,
                         tool_calls: tc,
                         done: json.choices?.[0]?.finish_reason != null,
                     };
@@ -530,6 +542,7 @@ class OpenRouterProvider implements Provider {
                             promptTokens: json.usage.prompt_tokens ?? 0,
                             completionTokens: json.usage.completion_tokens ?? 0,
                             totalTokens: json.usage.total_tokens ?? 0,
+                            reasoningTokens: json.usage.completion_tokens_details?.reasoning_tokens ?? undefined,
                         };
                     }
                     push(chunk);
@@ -637,13 +650,16 @@ class AnthropicProvider implements Provider {
             input_schema: t.function.parameters,
         }));
 
+        // Enable extended thinking for models that support it (Claude 3.7+)
+        const supportsThinking = /claude-(3-[7-9]|[4-9]|sonnet-4|opus-4|haiku-4)/.test(model);
         const payload = JSON.stringify({
             model,
-            max_tokens: 8192,
+            max_tokens: supportsThinking ? 16000 : 8192,
             system: systemMsg?.content,
             messages: anthropicMessages,
             tools: anthropicTools.length > 0 ? anthropicTools : undefined,
             stream: true,
+            ...(supportsThinking ? { thinking: { type: "enabled", budget_tokens: 10000 } } : {}),
         });
 
         const { push, end, iterator } = createStreamQueue();
@@ -679,6 +695,8 @@ class AnthropicProvider implements Provider {
                         case "content_block_delta":
                             if (event.delta?.type === "text_delta") {
                                 push({ content: event.delta.text, done: false });
+                            } else if (event.delta?.type === "thinking_delta") {
+                                push({ reasoning: event.delta.thinking, done: false });
                             } else if (event.delta?.type === "input_json_delta") {
                                 // Tool input streaming — accumulate
                             }
@@ -825,7 +843,10 @@ class GoogleProvider implements Provider {
                             if (!candidate) continue;
                             const parts = candidate.content?.parts ?? [];
                             for (const part of parts) {
-                                if (part.text) {
+                                if (part.text && part.thought) {
+                                    // Gemini 2.5 thinking part
+                                    push({ reasoning: part.text, done: false });
+                                } else if (part.text) {
                                     push({ content: part.text, done: false });
                                 }
                                 if (part.functionCall) {
