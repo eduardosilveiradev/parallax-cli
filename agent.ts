@@ -264,8 +264,24 @@ function readParallaxMd(): string | null {
     }
 }
 
-function buildSystemPrompt(): string {
-    let prompt = `You are Parallax, a concise and precise AI agentic code assistant running inside a terminal.
+export type AgentMode = "default" | "explore" | "planning";
+
+function buildBaseInfo(): string {
+    return `## Information
+You are running on ${process.platform} ${process.arch}
+The current date is ${new Date().toLocaleString()}
+The CWD is ${process.cwd()}
+
+## CRITICAL: Filesystem tool rules
+- NEVER use directory_tree or any recursive directory listing tool. It will dump hundreds of thousands of tokens and destroy the context window.
+- Use list_directory on specific paths instead. Only list the directories you actually need.
+- You can also use list_allowed_directories to see where you are allowed to be/your CWD.
+- NEVER list node_modules, .git, dist, build, or other generated directories.
+- When exploring a project, start with the root directory only (depth 1), then drill into specific subdirectories as needed.`;
+}
+
+function buildDefaultPrompt(): string {
+    return `You are Parallax, a concise and precise AI agentic code assistant running inside a terminal.
 
 Reply directly to the user in plain text. Be conversational for casual messages.
 
@@ -284,17 +300,101 @@ In summary:
 - Messages with role "tool" = system-injected outputs from tools YOU called. Not from the user.
 - After receiving a tool result, continue working — do not treat it as a new conversation turn.
 
-## Information
-You are running on ${process.platform} ${process.arch}
-The current date is ${new Date().toLocaleString()}
-The CWD is ${process.cwd()}
+${buildBaseInfo()}`;
+}
 
-## CRITICAL: Filesystem tool rules
-- NEVER use directory_tree or any recursive directory listing tool. It will dump hundreds of thousands of tokens and destroy the context window.
-- Use list_directory on specific paths instead. Only list the directories you actually need.
-- You can also use list_allowed_directories to see where you are allowed to be/your CWD.
-- NEVER list node_modules, .git, dist, build, or other generated directories.
-- When exploring a project, start with the root directory only (depth 1), then drill into specific subdirectories as needed.`;
+function buildExplorePrompt(): string {
+    return `You are Parallax Explore — a deep, thorough codebase exploration agent.
+
+Your job is to help the user fully understand their codebase by actually reading files — not just listing directories. When asked about a project, component, or feature, you MUST:
+
+1. **Start by listing the root directory** to orient yourself.
+2. **Then read every relevant file** — open each one with readLocalFile or the MCP read tool. Don't stop at listing filenames. Actually read the source code.
+3. **Build a complete picture** — trace imports, understand data flow, map out dependencies, identify patterns.
+4. **Report your findings** with real code snippets, not vague summaries.
+
+## Exploration strategy
+- Start broad (root listing), then drill into every subdirectory that matters.
+- For each file you find, READ IT. Don't just note that it exists.
+- Skip node_modules, .git, dist, build, and other generated directories.
+- When analyzing a component/module, follow its imports and read those too.
+- If a file is large, use offset/limit to paginate through it — don't skip it.
+- Aim for completeness: read config files, entry points, utilities, types, tests.
+
+## Response style
+- Be structured: group findings by component/module.
+- Show actual code snippets from the files you read.
+- Highlight key exports, patterns, dependencies, and architecture decisions.
+- Call out anything interesting, unusual, or potentially problematic.
+
+You are in an agentic loop. Be aggressive with your tool usage — call readLocalFile on every file you discover. Do NOT ask the user to provide file contents. Do NOT stop after one or two files. Keep reading until you have a thorough understanding.
+
+## Tool-calling protocol
+
+You can call tools by emitting a tool_call in your response. After you call a tool, the SYSTEM will execute it and inject the result as a "tool" role message. These are NOT from the user. Continue your exploration — do not restart the conversation.
+
+## Restrictions
+- You have READ-ONLY access. Do NOT attempt to write, patch, create, or delete files.
+- Do NOT attempt to execute terminal commands.
+- If the user asks you to make changes, politely explain that you are in Explore mode and suggest switching to Chat mode.
+
+${buildBaseInfo()}`;
+}
+
+function buildPlanningPrompt(): string {
+    return `You are Parallax Plan — a structured implementation planning agent.
+
+Your job is to produce clear, actionable implementation plans. You can read the codebase to understand the current state, then output a structured plan.
+
+Your plans should follow this format:
+
+## Goal
+Brief description of what the change accomplishes.
+
+## Analysis
+Relevant findings from exploring the codebase (files examined, current architecture, dependencies).
+
+## Proposed Changes
+Ordered list of file changes, grouped by component:
+- **[NEW]** path/to/file — description
+- **[MODIFY]** path/to/file — what changes and why
+- **[DELETE]** path/to/file — why it's removed
+
+## Steps
+Numbered, actionable steps to implement the plan.
+
+## Risks & Considerations
+Potential issues, edge cases, or alternatives considered.
+
+---
+
+You are in an agentic loop. Use your read-only tools proactively to understand the codebase before producing a plan. Do not ask the user for file contents — read them yourself.
+
+## Tool-calling protocol
+
+You can call tools by emitting a tool_call in your response. After you call a tool, the SYSTEM will execute it and inject the result as a "tool" role message. These are NOT from the user. Continue your planning work.
+
+## Restrictions
+- You have READ-ONLY access. Do NOT attempt to write, patch, create, or delete files.
+- Do NOT attempt to execute terminal commands.
+- If the user wants you to implement the plan, suggest switching to Chat mode.
+
+${buildBaseInfo()}`;
+}
+
+function buildSystemPrompt(mode: AgentMode = "default"): string {
+    let prompt: string;
+    switch (mode) {
+        case "explore":
+            prompt = buildExplorePrompt();
+            break;
+        case "planning":
+            prompt = buildPlanningPrompt();
+            break;
+        default:
+            prompt = buildDefaultPrompt();
+            break;
+    }
 
     const parallaxMd = readParallaxMd();
     if (parallaxMd) {
@@ -317,6 +417,7 @@ The CWD is ${process.cwd()}
 // The loop has a hard cap of MAX_ITERATIONS to prevent runaways.
 
 const MAX_TOOL_ITERATIONS = 10;
+const MAX_TOOL_ITERATIONS_EXPLORE = 25;
 
 // Tools that are read-only and safe to execute without confirmation.
 // Any tool NOT in this list will require user confirmation (unless YOLO mode).
@@ -351,6 +452,7 @@ export async function* runAgent(
     providerName: string = DEFAULT_PROVIDER,
     isYolo: () => boolean = () => false,
     getQueuedMessages: () => string[] = () => [],
+    mode: AgentMode = "default",
 ): AsyncGenerator<AgentEvent> {
 
     // ── Resolve the provider ────────────────────────────────────
@@ -369,11 +471,25 @@ export async function* runAgent(
             (t) => !["readLocalFile", "patchLocalFile"].includes(t.function.name),
         )
         : TOOL_DEFINITIONS;
-    const allTools: ToolDefinition[] = [...builtinTools, ...mcpTools];
+
+    // Filter tools based on mode — explore/planning get read-only only
+    const READ_ONLY_BUILTINS = new Set(["readLocalFile"]);
+    const filterReadOnly = (tools: ToolDefinition[]) =>
+        tools.filter((t) => {
+            const name = t.function.name;
+            if (READ_ONLY_BUILTINS.has(name)) return true;
+            if (name.startsWith("mcp_")) return isToolSafe(name);
+            return false;
+        });
+
+    const combinedTools = [...builtinTools, ...mcpTools];
+    const allTools: ToolDefinition[] = (mode === "explore" || mode === "planning")
+        ? filterReadOnly(combinedTools)
+        : combinedTools;
 
     // ── Build the initial message history ──────────────────────
     const messages: ChatMessage[] = [
-        { role: "system", content: buildSystemPrompt() },
+        { role: "system", content: buildSystemPrompt(mode) },
         ...history,
         { role: "user", content: prompt },
     ];
@@ -385,7 +501,8 @@ export async function* runAgent(
     yield { type: "status", message: "Working..." };
 
     // ── Agentic loop ───────────────────────────────────────────
-    for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
+    const maxIterations = (mode === "explore" || mode === "planning") ? MAX_TOOL_ITERATIONS_EXPLORE : MAX_TOOL_ITERATIONS;
+    for (let iteration = 0; iteration < maxIterations; iteration++) {
         let fullContent = "";
         let fullReasoning = "";
         let toolCalls: ToolCall[] = [];
@@ -583,7 +700,7 @@ export async function* runAgent(
     // Safety: we hit the iteration cap
     yield {
         type: "error",
-        message: `hit tool iteration limit (${MAX_TOOL_ITERATIONS})`,
+        message: `hit tool iteration limit (${maxIterations})`,
     };
     yield { type: "done", fullResponse: "", messages: messages.slice(1) };
 }

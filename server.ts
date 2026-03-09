@@ -1,6 +1,6 @@
 import express from "express";
 import cors from "cors";
-import { runAgent } from "./agent.js";
+import { runAgent, type AgentMode } from "./agent.js";
 import {
     type MCPConnection,
     type MCPServerConfig,
@@ -65,6 +65,7 @@ app.post("/api/chat", async (req, res) => {
         provider = "ollama",
         think = true,
         sessionId: existingSessionId,
+        mode = "default" as AgentMode,
     } = req.body;
 
     const convId = existingSessionId || generateId();
@@ -88,6 +89,7 @@ app.post("/api/chat", async (req, res) => {
             provider,
             () => think,
             () => [],
+            mode,
         );
 
         for await (const event of gen) {
