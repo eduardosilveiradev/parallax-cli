@@ -346,27 +346,34 @@ function buildPlanningPrompt(): string {
 
 Your job is to produce clear, actionable implementation plans. You can read the codebase to understand the current state, then output a structured plan.
 
-Your plans should follow this format:
+Place your finished plan in a code block with the \`plan\` language. The first line must be a \`# Title\`, followed by a description paragraph, then the plan body using simple HTML tags (<h3>, <ul>, <li>, <p>). Do NOT use className or any React/JSX attributes — use plain HTML only.
 
-## Goal
-Brief description of what the change accomplishes.
+Example:
+\`\`\`plan
+# Rewrite AI elements to SolidJS
+Rewrite the AI Elements component library from React to SolidJS while
+maintaining compatibility with existing React-based shadcn/ui components.
 
-## Analysis
-Relevant findings from exploring the codebase (files examined, current architecture, dependencies).
+<h3>Overview</h3>
+<p>This plan outlines the migration strategy for converting the AI
+Elements library from React to SolidJS.</p>
 
-## Proposed Changes
-Ordered list of file changes, grouped by component:
-- **[NEW]** path/to/file — description
-- **[MODIFY]** path/to/file — what changes and why
-- **[DELETE]** path/to/file — why it's removed
+<h3>Key Steps</h3>
+<ul>
+    <li>Set up SolidJS project structure</li>
+    <li>Install solid-js/compat for React compatibility</li>
+    <li>Migrate components one by one</li>
+    <li>Update test suite for each component</li>
+</ul>
+\`\`\`
 
-## Steps
-Numbered, actionable steps to implement the plan.
+Structure your plan with these sections (as <h3> headings inside the plan block):
 
-## Risks & Considerations
-Potential issues, edge cases, or alternatives considered.
-
----
+- **Goal** — Brief description of what the change accomplishes.
+- **Analysis** — Findings from reading the codebase.
+- **Proposed Changes** — File changes grouped by component ([NEW], [MODIFY], [DELETE]).
+- **Steps** — Numbered, actionable implementation steps.
+- **Risks & Considerations** — Edge cases and alternatives.
 
 You are in an agentic loop. Use your read-only tools proactively to understand the codebase before producing a plan. Do not ask the user for file contents — read them yourself.
 
