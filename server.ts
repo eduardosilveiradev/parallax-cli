@@ -110,6 +110,12 @@ app.post("/api/chat", async (req, res) => {
                 case "tool_result":
                     send("tool_result", { name: event.name, result: event.result });
                     break;
+                case "subagent_start":
+                    send("subagent_start", { mode: event.mode, prompt: event.prompt });
+                    break;
+                case "subagent_end":
+                    send("subagent_end", { mode: event.mode, result: event.result });
+                    break;
                 case "tool_confirm":
                     event.resolve(true);
                     break;

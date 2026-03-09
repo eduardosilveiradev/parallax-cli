@@ -46,6 +46,8 @@ export type AgentEvent =
     | { type: "tool_start"; name: string; args: Record<string, unknown> }
     | { type: "tool_confirm"; name: string; args: Record<string, unknown>; resolve: (approved: boolean) => void }
     | { type: "tool_result"; name: string; result: string }
+    | { type: "subagent_start"; mode: AgentMode; prompt: string }
+    | { type: "subagent_end"; mode: AgentMode; result: string }
     | { type: "checkpoint"; messages: ChatMessage[] }
     | { type: "injected_messages"; messages: string[] }
     | { type: "usage"; usage: TokenUsage }
@@ -130,6 +132,52 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
             },
         },
     }
+];
+
+// ── Subagent tool definitions (only available in default mode) ──
+
+const SUBAGENT_TOOL_DEFINITIONS: ToolDefinition[] = [
+    {
+        type: "function",
+        function: {
+            name: "callExploreAgent",
+            description:
+                "Spawn a read-only Explore subagent that deeply reads files and " +
+                "returns findings about the codebase. Use this when you need to " +
+                "understand the project structure, trace data flow, or find patterns " +
+                "before making changes.",
+            parameters: {
+                type: "object",
+                properties: {
+                    prompt: {
+                        type: "string",
+                        description: "What to explore or investigate in the codebase.",
+                    },
+                },
+                required: ["prompt"],
+            },
+        },
+    },
+    {
+        type: "function",
+        function: {
+            name: "callPlanningAgent",
+            description:
+                "Spawn a read-only Planning subagent that reads the codebase and " +
+                "produces a structured implementation plan. Use this when you need " +
+                "to plan complex multi-step changes before implementing them.",
+            parameters: {
+                type: "object",
+                properties: {
+                    prompt: {
+                        type: "string",
+                        description: "What to plan — describe the feature or change.",
+                    },
+                },
+                required: ["prompt"],
+            },
+        },
+    },
 ];
 
 // ── Tool implementations (placeholders) ────────────────────────
@@ -430,6 +478,8 @@ const MAX_TOOL_ITERATIONS_EXPLORE = 25;
 // Any tool NOT in this list will require user confirmation (unless YOLO mode).
 const SAFE_TOOLS = new Set([
     "readLocalFile",
+    "callExploreAgent",
+    "callPlanningAgent",
     // MCP filesystem read-only tools
     "mcp_filesystem_read_file",
     "mcp_filesystem_read_multiple_files",
@@ -492,7 +542,7 @@ export async function* runAgent(
     const combinedTools = [...builtinTools, ...mcpTools];
     const allTools: ToolDefinition[] = (mode === "explore" || mode === "planning")
         ? filterReadOnly(combinedTools)
-        : combinedTools;
+        : [...combinedTools, ...SUBAGENT_TOOL_DEFINITIONS];
 
     // ── Build the initial message history ──────────────────────
     const messages: ChatMessage[] = [
@@ -640,19 +690,58 @@ export async function* runAgent(
                 }
             }
 
-            // Determine if this is an MCP tool (prefixed with mcp_)
-            const isMCP = call.function.name.startsWith("mcp_");
-
-            yield {
-                type: isMCP ? "mcp_status" : "status",
-                message: `executing ${call.function.name}`,
-            };
-
             let result: string;
             try {
-                result = isMCP
-                    ? await dispatchMCPTool(call.function.name, args, mcpConnections)
-                    : await dispatchTool(call.function.name, args);
+                // ── Subagent dispatch ─────────────────────────────
+                if (call.function.name === "callExploreAgent" || call.function.name === "callPlanningAgent") {
+                    const subMode: AgentMode = call.function.name === "callExploreAgent" ? "explore" : "planning";
+                    const subPrompt = args["prompt"] as string;
+                    yield { type: "subagent_start", mode: subMode, prompt: subPrompt };
+                    yield { type: "status", message: `running ${subMode} subagent…` };
+                    let subResponse = "";
+                    const subGen = runAgent(
+                        subPrompt,
+                        [],  // fresh context
+                        mcpConnections,
+                        model,
+                        providerName,
+                        isYolo,
+                        () => [],
+                        subMode,
+                    );
+                    for await (const subEvent of subGen) {
+                        // Forward observable events to parent stream
+                        switch (subEvent.type) {
+                            case "tool_start":
+                            case "tool_result":
+                            case "status":
+                            case "mcp_status":
+                            case "reasoning":
+                            case "error":
+                            case "usage":
+                                yield subEvent;
+                                break;
+                            case "token":
+                                subResponse += subEvent.content;
+                                break;
+                            case "done":
+                                subResponse = subEvent.fullResponse || subResponse;
+                                break;
+                        }
+                    }
+                    result = subResponse || "(subagent returned no output)";
+                    yield { type: "subagent_end", mode: subMode, result };
+                } else {
+                    // Regular tool dispatch
+                    const isMCP = call.function.name.startsWith("mcp_");
+                    yield {
+                        type: isMCP ? "mcp_status" : "status",
+                        message: `executing ${call.function.name}`,
+                    };
+                    result = isMCP
+                        ? await dispatchMCPTool(call.function.name, args, mcpConnections)
+                        : await dispatchTool(call.function.name, args);
+                }
             } catch (toolErr: any) {
                 result = `⚠ error: ${toolErr.message ?? String(toolErr)}`;
                 yield { type: "error", message: `${call.function.name}: ${toolErr.message ?? toolErr}` };
