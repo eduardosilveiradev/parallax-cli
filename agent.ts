@@ -51,6 +51,7 @@ export type AgentEvent =
     | { type: "checkpoint"; messages: ChatMessage[] }
     | { type: "injected_messages"; messages: string[] }
     | { type: "usage"; usage: TokenUsage }
+    | { type: "model_info"; model: string }
     | { type: "error"; message: string }
     | { type: "done"; fullResponse: string; messages: ChatMessage[] };
 
@@ -319,6 +320,8 @@ function buildBaseInfo(): string {
 You are running on ${process.platform} ${process.arch}
 The current date is ${new Date().toLocaleString()}
 The CWD is ${process.cwd()}
+
+Every message from "tool" is NOT the user. It is the response of a tool YOU called.
 
 ## CRITICAL: Filesystem tool rules
 - NEVER use directory_tree or any recursive directory listing tool. It will dump hundreds of thousands of tokens and destroy the context window.
@@ -617,6 +620,11 @@ export async function* runAgent(
             if (chunk.usage) {
                 yield { type: "usage", usage: chunk.usage };
             }
+
+            // Forward resolved model name (for dynamic routing like openrouter/free)
+            if (chunk.model) {
+                yield { type: "model_info", model: chunk.model };
+            }
         }
 
         // ── No tool calls → we're done ───────────────────────────
@@ -699,6 +707,8 @@ export async function* runAgent(
                     yield { type: "subagent_start", mode: subMode, prompt: subPrompt };
                     yield { type: "status", message: `running ${subMode} subagent…` };
                     let subResponse = "";
+                    const subTools: { name: string; args: Record<string, unknown>; result?: string }[] = [];
+                    let subReasoning = "";
                     const subGen = runAgent(
                         subPrompt,
                         [],  // fresh context
@@ -713,10 +723,21 @@ export async function* runAgent(
                         // Forward observable events to parent stream
                         switch (subEvent.type) {
                             case "tool_start":
-                            case "tool_result":
+                                subTools.push({ name: subEvent.name, args: subEvent.args });
+                                yield subEvent;
+                                break;
+                            case "tool_result": {
+                                const st = subTools.find(t => t.name === subEvent.name && !t.result);
+                                if (st) st.result = subEvent.result;
+                                yield subEvent;
+                                break;
+                            }
+                            case "reasoning":
+                                subReasoning += subEvent.content;
+                                yield subEvent;
+                                break;
                             case "status":
                             case "mcp_status":
-                            case "reasoning":
                             case "error":
                             case "usage":
                                 yield subEvent;
@@ -729,8 +750,14 @@ export async function* runAgent(
                                 break;
                         }
                     }
-                    result = subResponse || "(subagent returned no output)";
-                    yield { type: "subagent_end", mode: subMode, result };
+                    // Encode tool activities in result so they persist in the conversation
+                    const subResult = JSON.stringify({
+                        response: subResponse || "(subagent returned no output)",
+                        tools: subTools,
+                        reasoning: subReasoning || undefined,
+                    });
+                    result = subResult;
+                    yield { type: "subagent_end", mode: subMode, result: subResponse };
                 } else {
                     // Regular tool dispatch
                     const isMCP = call.function.name.startsWith("mcp_");
@@ -749,8 +776,12 @@ export async function* runAgent(
 
             // Format the result for display (pass diffs as-is with marker, truncate others)
             let displayResult: string;
+            const isSubagentCall = call.function.name === "callExploreAgent" || call.function.name === "callPlanningAgent";
             const isDiff = result.includes("---") && result.includes("+++") && result.includes("@@");
-            if (isDiff) {
+            if (isSubagentCall) {
+                // Subagent results are handled by the subagent_end event; skip display
+                displayResult = "(see subagent output above)";
+            } else if (isDiff) {
                 // Pass raw diff with a marker so the UI can render it natively
                 displayResult = "__DIFF__" + result;
             } else {
@@ -766,10 +797,12 @@ export async function* runAgent(
             };
 
             // Append tool result to history (capped to prevent context blowout)
+            // Skip capping for subagent calls — the JSON must stay intact for persistence
             const MAX_TOOL_RESULT_CHARS = 10_000;
-            const cappedResult = result.length > MAX_TOOL_RESULT_CHARS
-                ? result.slice(0, MAX_TOOL_RESULT_CHARS) + `\n\n--- Output truncated (${result.length} chars total, showing first ${MAX_TOOL_RESULT_CHARS}) ---`
-                : result;
+            const cappedResult = isSubagentCall ? result
+                : result.length > MAX_TOOL_RESULT_CHARS
+                    ? result.slice(0, MAX_TOOL_RESULT_CHARS) + `\n\n--- Output truncated (${result.length} chars total, showing first ${MAX_TOOL_RESULT_CHARS}) ---`
+                    : result;
             messages.push({
                 role: "tool",
                 content: cappedResult,

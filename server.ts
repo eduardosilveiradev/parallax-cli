@@ -30,6 +30,9 @@ const DEFAULT_MCP_SERVERS: MCPServerConfig[] = [
 
 let mcpConnections: MCPConnection[] = [];
 
+// Per-session message queues (user can type while agent is processing)
+const sessionQueues = new Map<string, string[]>();
+
 app.use(cors());
 app.use(express.json());
 
@@ -80,6 +83,10 @@ app.post("/api/chat", async (req, res) => {
         res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     };
 
+    // Set up the message queue for this session
+    if (!sessionQueues.has(convId)) sessionQueues.set(convId, []);
+    const queue = sessionQueues.get(convId)!;
+
     try {
         const gen = runAgent(
             prompt,
@@ -88,7 +95,12 @@ app.post("/api/chat", async (req, res) => {
             model,
             provider,
             () => think,
-            () => [],
+            () => {
+                // Drain and return queued messages
+                const msgs = [...queue];
+                queue.length = 0;
+                return msgs;
+            },
             mode,
         );
 
@@ -116,6 +128,9 @@ app.post("/api/chat", async (req, res) => {
                 case "subagent_end":
                     send("subagent_end", { mode: event.mode, result: event.result });
                     break;
+                case "injected_messages":
+                    send("injected_messages", { messages: event.messages });
+                    break;
                 case "tool_confirm":
                     event.resolve(true);
                     break;
@@ -125,7 +140,11 @@ app.post("/api/chat", async (req, res) => {
                 case "error":
                     send("error", { message: event.message });
                     break;
-                case "checkpoint":
+                case "model_info":
+                    send("model_info", { model: event.model });
+                    break;
+                case "checkpoint": {
+                    const existingC = await loadConversation(convId);
                     saveConversation({
                         id: convId,
                         title: deriveTitle(event.messages),
@@ -134,10 +153,13 @@ app.post("/api/chat", async (req, res) => {
                         createdAt,
                         updatedAt: new Date().toISOString(),
                         messages: event.messages,
+                        displayData: existingC?.displayData,
                     }).catch(() => { });
                     send("checkpoint", { sessionId: convId });
                     break;
-                case "done":
+                }
+                case "done": {
+                    const existingD = await loadConversation(convId);
                     saveConversation({
                         id: convId,
                         title: deriveTitle(event.messages),
@@ -146,6 +168,7 @@ app.post("/api/chat", async (req, res) => {
                         createdAt,
                         updatedAt: new Date().toISOString(),
                         messages: event.messages,
+                        displayData: existingD?.displayData,
                     }).catch(() => { });
                     send("done", {
                         sessionId: convId,
@@ -153,14 +176,25 @@ app.post("/api/chat", async (req, res) => {
                         messages: event.messages,
                     });
                     break;
+                }
             }
         }
     } catch (err: unknown) {
         console.error("Chat error:", err);
         send("error", { message: err instanceof Error ? err.message : String(err) });
     } finally {
+        sessionQueues.delete(convId);
         res.end();
     }
+});
+
+// Queue a message to inject into a running agent session
+app.post("/api/chat/:id/queue", (req, res) => {
+    const { message } = req.body;
+    const queue = sessionQueues.get(req.params.id);
+    if (!queue) return res.status(404).json({ error: "no active session" });
+    queue.push(message);
+    res.json({ ok: true, queued: queue.length });
 });
 
 // ─── Sessions ───────────────────────────────────────────────
@@ -172,6 +206,15 @@ app.get("/api/sessions/:id", async (req, res) => {
     const conv = await loadConversation(req.params.id);
     if (!conv) return res.status(404).json({ error: "not found" });
     res.json(conv);
+});
+
+app.patch("/api/sessions/:id", async (req, res) => {
+    const conv = await loadConversation(req.params.id);
+    if (!conv) return res.status(404).json({ error: "not found" });
+    if (req.body.displayData) conv.displayData = req.body.displayData;
+    conv.updatedAt = new Date().toISOString();
+    await saveConversation(conv);
+    res.json({ ok: true });
 });
 
 app.delete("/api/sessions/:id", async (req, res) => {

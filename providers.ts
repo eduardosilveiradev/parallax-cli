@@ -67,6 +67,8 @@ export interface StreamChunk {
     done: boolean;
     /** Token usage stats (typically sent with the final chunk). */
     usage?: TokenUsage;
+    /** Resolved model name (for dynamic routing like openrouter/free). */
+    model?: string;
 }
 
 /** The contract every LLM provider must implement. */
@@ -536,6 +538,7 @@ class OpenRouterProvider implements Provider {
                         reasoning: delta?.reasoning_content ?? delta?.reasoning ?? undefined,
                         tool_calls: tc,
                         done: json.choices?.[0]?.finish_reason != null,
+                        model: json.model ?? undefined,
                     };
                     if (json.usage) {
                         chunk.usage = {

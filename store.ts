@@ -22,6 +22,7 @@ export interface Conversation {
     createdAt: string;
     updatedAt: string;
     messages: ChatMessage[];
+    displayData?: Record<string, unknown>;
 }
 
 export interface ConversationSummary {
