@@ -3,3 +3,5 @@ dist
 .env
 .vercel
 .env*.local
+
+.parallax-sandbox

@@ -15,6 +15,7 @@ import fs from "node:fs/promises";
 import fsSync, { writeFileSync } from "node:fs";
 import { exec } from "node:child_process";
 import { type MCPConnection, type ToolDefinition as MCPToolDef, callMCPTool } from "./mcp-client.js";
+import { type SandboxInstance } from "./sandbox.js";
 import {
     type ChatMessage,
     type ToolCall,
@@ -256,9 +257,18 @@ async function executeRemoteVPS(
 async function dispatchTool(
     name: string,
     args: Record<string, unknown>,
+    sandbox?: SandboxInstance,
 ): Promise<string> {
     switch (name) {
         case "readLocalFile":
+            // When sandbox is active, route through sandbox
+            if (sandbox) {
+                return sandbox.readFile(
+                    args["path"] as string,
+                    (args["offset"] as number) ?? 0,
+                    (args["limit"] as number) ?? MAX_FILE_LINES,
+                );
+            }
             return readLocalFile(
                 args["path"] as string,
                 (args["offset"] as number) ?? 0,
@@ -266,9 +276,15 @@ async function dispatchTool(
             );
 
         case "patchLocalFile":
+            if (sandbox) {
+                return sandbox.writeFile(args["path"] as string, args["diff"] as string);
+            }
             return patchLocalFile(args["path"] as string, args["diff"] as string);
 
         case "executeTerminalCommand":
+            if (sandbox) {
+                return sandbox.runCommand(args["command"] as string);
+            }
             return executeTerminalCommand(args["command"] as string);
 
         case "executeRemoteVPS":
@@ -440,7 +456,7 @@ You can call tools by emitting a tool_call in your response. After you call a to
 ${buildBaseInfo()}`;
 }
 
-function buildSystemPrompt(mode: AgentMode = "default"): string {
+function buildSystemPrompt(mode: AgentMode = "default", sandboxInfo?: { id: string; repoUrl?: string }): string {
     let prompt: string;
     switch (mode) {
         case "explore":
@@ -457,6 +473,14 @@ function buildSystemPrompt(mode: AgentMode = "default"): string {
     const parallaxMd = readParallaxMd();
     if (parallaxMd) {
         prompt += `\n\n## Project Context (from PARALLAX.md)\n\n${parallaxMd}`;
+    }
+
+    if (sandboxInfo) {
+        prompt += `\n\n## Sandbox Environment\n\nYou have an ACTIVE SANDBOX connected${sandboxInfo.repoUrl ? ` with the repository: ${sandboxInfo.repoUrl}` : ''}.
+
+All your tools (readLocalFile, patchLocalFile, executeTerminalCommand, and MCP filesystem tools) are transparently routed through this sandbox. Files you read and write are inside the sandbox workspace, commands you run execute inside it.
+
+Paths are relative to the workspace root (the cloned repo). Start by listing the root directory to orient yourself.`;
     }
 
     return prompt;
@@ -513,6 +537,7 @@ export async function* runAgent(
     isYolo: () => boolean = () => false,
     getQueuedMessages: () => string[] = () => [],
     mode: AgentMode = "default",
+    sandbox?: SandboxInstance,
 ): AsyncGenerator<AgentEvent> {
 
     // ── Resolve the provider ────────────────────────────────────
@@ -543,13 +568,15 @@ export async function* runAgent(
         });
 
     const combinedTools = [...builtinTools, ...mcpTools];
+
     const allTools: ToolDefinition[] = (mode === "explore" || mode === "planning")
         ? filterReadOnly(combinedTools)
         : [...combinedTools, ...SUBAGENT_TOOL_DEFINITIONS];
 
     // ── Build the initial message history ──────────────────────
+    const sandboxInfo = sandbox ? { id: sandbox.id, repoUrl: sandbox.repoUrl } : undefined;
     const messages: ChatMessage[] = [
-        { role: "system", content: buildSystemPrompt(mode) },
+        { role: "system", content: buildSystemPrompt(mode, sandboxInfo) },
         ...history,
         { role: "user", content: prompt },
     ];
@@ -765,9 +792,28 @@ export async function* runAgent(
                         type: isMCP ? "mcp_status" : "status",
                         message: `executing ${call.function.name}`,
                     };
-                    result = isMCP
-                        ? await dispatchMCPTool(call.function.name, args, mcpConnections)
-                        : await dispatchTool(call.function.name, args);
+                    if (isMCP) {
+                        // MCP filesystem tools get routed through sandbox when active
+                        if (sandbox && call.function.name.includes("filesystem")) {
+                            const mcpName = call.function.name;
+                            if (mcpName.includes("read_file") || mcpName.includes("read_multiple")) {
+                                const filePath = (args["path"] as string) || (args["paths"] as string[])?.[0] || ".";
+                                result = await sandbox.readFile(filePath);
+                            } else if (mcpName.includes("write_file") || mcpName.includes("edit_file")) {
+                                result = await sandbox.writeFile(args["path"] as string, (args["content"] ?? args["new_content"] ?? "") as string);
+                            } else if (mcpName.includes("list_directory")) {
+                                result = await sandbox.listDir((args["path"] as string) || ".");
+                            } else if (mcpName.includes("search") || mcpName.includes("get_file_info")) {
+                                result = await sandbox.runCommand(`find . -name "${args["pattern"] || args["path"] || "*"}" 2>/dev/null | head -50`);
+                            } else {
+                                result = await dispatchMCPTool(call.function.name, args, mcpConnections);
+                            }
+                        } else {
+                            result = await dispatchMCPTool(call.function.name, args, mcpConnections);
+                        }
+                    } else {
+                        result = await dispatchTool(call.function.name, args, sandbox);
+                    }
                 }
             } catch (toolErr: any) {
                 result = `⚠ error: ${toolErr.message ?? String(toolErr)}`;

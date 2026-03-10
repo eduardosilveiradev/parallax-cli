@@ -15,6 +15,7 @@ import {
     deleteConversation,
 } from "./store.js";
 import { getProvider, listProviders } from "./providers.js";
+import { createSandbox, type SandboxInstance } from "./sandbox.js";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 7001;
@@ -32,6 +33,9 @@ let mcpConnections: MCPConnection[] = [];
 
 // Per-session message queues (user can type while agent is processing)
 const sessionQueues = new Map<string, string[]>();
+
+// Active sandboxes per session
+const activeSandboxes = new Map<string, SandboxInstance>();
 
 app.use(cors());
 app.use(express.json());
@@ -84,6 +88,7 @@ app.post("/api/chat", async (req, res) => {
         think = true,
         sessionId: existingSessionId,
         mode = "default" as AgentMode,
+        sandboxId,
     } = req.body;
 
     const convId = existingSessionId || generateId();
@@ -103,6 +108,10 @@ app.post("/api/chat", async (req, res) => {
     const queue = sessionQueues.get(convId)!;
 
     try {
+        // Look up sandbox for this session if one exists
+        const sandbox = sandboxId ? activeSandboxes.get(sandboxId) : undefined;
+        console.log(`[sandbox] sandboxId=${sandboxId ?? "none"}, found=${!!sandbox}, active=${activeSandboxes.size}`);
+
         const gen = runAgent(
             prompt,
             history,
@@ -117,6 +126,7 @@ app.post("/api/chat", async (req, res) => {
                 return msgs;
             },
             mode,
+            sandbox,
         );
 
         for await (const event of gen) {
@@ -235,6 +245,40 @@ app.patch("/api/sessions/:id", async (req, res) => {
 app.delete("/api/sessions/:id", async (req, res) => {
     await deleteConversation(req.params.id);
     res.json({ ok: true });
+});
+
+// ─── Sandbox ────────────────────────────────────────────────
+app.post("/api/sandbox", async (req, res) => {
+    const { repoUrl } = req.body;
+    try {
+        const sandbox = await createSandbox(repoUrl);
+        activeSandboxes.set(sandbox.id, sandbox);
+        // List files in workspace root
+        const files = await sandbox.listDir(".");
+        res.json({ sandboxId: sandbox.id, repoUrl: repoUrl || null, files });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message ?? "failed to create sandbox" });
+    }
+});
+
+app.get("/api/sandbox", (_req, res) => {
+    const sandboxes = [...activeSandboxes.entries()].map(([id, s]) => ({
+        id,
+        repoUrl: s.repoUrl || null,
+    }));
+    res.json(sandboxes);
+});
+
+app.delete("/api/sandbox/:id", async (req, res) => {
+    const sandbox = activeSandboxes.get(req.params.id);
+    if (!sandbox) return res.status(404).json({ error: "sandbox not found" });
+    try {
+        await sandbox.stop();
+        activeSandboxes.delete(req.params.id);
+        res.json({ ok: true });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 // ─── Models ─────────────────────────────────────────────────
