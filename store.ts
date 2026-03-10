@@ -129,9 +129,11 @@ function createNeonBackend(databaseUrl: string): StorageBackend {
             const sql = await getSql();
             const messagesJson = JSON.stringify(conv.messages);
             const displayDataJson = conv.displayData ? JSON.stringify(conv.displayData) : null;
+            const createdAt = new Date(conv.createdAt).toISOString();
+            const updatedAt = new Date(conv.updatedAt).toISOString();
             await sql`
                 INSERT INTO conversations (id, title, model, provider, created_at, updated_at, messages, display_data)
-                VALUES (${conv.id}, ${conv.title}, ${conv.model}, ${conv.provider}, ${conv.createdAt}, ${conv.updatedAt}, ${messagesJson}::jsonb, ${displayDataJson}::jsonb)
+                VALUES (${conv.id}, ${conv.title}, ${conv.model}, ${conv.provider}, ${createdAt}, ${updatedAt}, ${messagesJson}::jsonb, ${displayDataJson}::jsonb)
                 ON CONFLICT (id) DO UPDATE SET
                     title = EXCLUDED.title,
                     model = EXCLUDED.model,
