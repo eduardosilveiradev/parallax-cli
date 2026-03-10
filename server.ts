@@ -42,6 +42,21 @@ app.use((req, _res, next) => {
     next();
 });
 
+// ─── Auth ────────────────────────────────────────────────────
+const API_KEY = process.env.PARALLAX_API_KEY;
+if (API_KEY) {
+    app.use("/api", (req, res, next) => {
+        if (req.headers["x-api-key"] !== API_KEY) {
+            res.status(401).json({ error: "unauthorized" });
+            return;
+        }
+        next();
+    });
+    console.log("🔒 API key authentication enabled");
+} else {
+    console.log("⚠️  No PARALLAX_API_KEY set — API is open (local dev mode)");
+}
+
 // Model availability
 app.get("/api/check", async (req, res) => {
     const { model } = req.query;
