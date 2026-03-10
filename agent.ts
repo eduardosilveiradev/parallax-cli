@@ -495,11 +495,6 @@ Paths are relative to the workspace root (the cloned repo). Start by listing the
 //   2. If the LLM emits tool_calls → pause streaming, execute
 //      each tool, append results, and re-trigger the LLM
 //   3. When the LLM finishes without tool calls → yield "done"
-//
-// The loop has a hard cap of MAX_ITERATIONS to prevent runaways.
-
-const MAX_TOOL_ITERATIONS = 10;
-const MAX_TOOL_ITERATIONS_EXPLORE = 25;
 
 // Tools that are read-only and safe to execute without confirmation.
 // Any tool NOT in this list will require user confirmation (unless YOLO mode).
@@ -588,8 +583,7 @@ export async function* runAgent(
     yield { type: "status", message: "Working..." };
 
     // ── Agentic loop ───────────────────────────────────────────
-    const maxIterations = (mode === "explore" || mode === "planning") ? MAX_TOOL_ITERATIONS_EXPLORE : MAX_TOOL_ITERATIONS;
-    for (let iteration = 0; iteration < maxIterations; iteration++) {
+    while (true) {
         let fullContent = "";
         let fullReasoning = "";
         let toolCalls: ToolCall[] = [];
@@ -651,6 +645,11 @@ export async function* runAgent(
             // Forward resolved model name (for dynamic routing like openrouter/free)
             if (chunk.model) {
                 yield { type: "model_info", model: chunk.model };
+            }
+
+            // Forward provider-level status (e.g. rate limit wait)
+            if (chunk.status) {
+                yield { type: "status", message: chunk.status };
             }
         }
 
@@ -871,11 +870,4 @@ export async function* runAgent(
         // Re-trigger the LLM with the updated history
         yield { type: "status", message: "Working..." };
     }
-
-    // Safety: we hit the iteration cap
-    yield {
-        type: "error",
-        message: `hit tool iteration limit (${maxIterations})`,
-    };
-    yield { type: "done", fullResponse: "", messages: messages.slice(1) };
 }

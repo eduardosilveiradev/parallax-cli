@@ -12,6 +12,11 @@ import path from "node:path";
 
 // ── Public interface ───────────────────────────────────────────
 
+export interface PRResult {
+    url: string;
+    branch: string;
+}
+
 export interface SandboxInstance {
     id: string;
     repoUrl?: string;
@@ -19,6 +24,7 @@ export interface SandboxInstance {
     writeFile(filePath: string, content: string): Promise<string>;
     runCommand(cmd: string): Promise<string>;
     listDir(dirPath: string): Promise<string>;
+    createPR(title: string, body: string, token: string): Promise<PRResult>;
     stop(): Promise<void>;
 }
 
@@ -35,7 +41,7 @@ async function createVercelSandbox(repoUrl?: string, oidcToken?: string): Promis
 
     const workDir = "/vercel/sandbox";
 
-    return {
+    const instance: SandboxInstance = {
         id: sandbox.sandboxId,
         repoUrl,
 
@@ -93,10 +99,15 @@ async function createVercelSandbox(repoUrl?: string, oidcToken?: string): Promis
             return stdout.trim();
         },
 
+        async createPR(title: string, body: string, token: string): Promise<PRResult> {
+            return createPRFromSandbox(instance, title, body, token);
+        },
+
         async stop(): Promise<void> {
             await sandbox.stop();
         },
     };
+    return instance;
 }
 
 // ── Local fallback backend ────────────────────────────────────
@@ -138,7 +149,7 @@ function createLocalSandbox(repoUrl?: string): SandboxInstance {
 
     const id = `local-${Date.now()}`;
 
-    return {
+    const instance: SandboxInstance = {
         id,
         repoUrl,
 
@@ -203,19 +214,194 @@ function createLocalSandbox(repoUrl?: string): SandboxInstance {
             }
         },
 
+        async createPR(title: string, body: string, token: string): Promise<PRResult> {
+            return createPRFromSandbox(instance, title, body, token);
+        },
+
         async stop(): Promise<void> {
             try {
                 await fs.rm(workDir, { recursive: true, force: true });
             } catch { /* best-effort */ }
         },
     };
+    return instance;
+}
+
+// ── Shared PR creation logic ──────────────────────────────────
+
+function parseGitHubRepo(repoUrl: string): { owner: string; repo: string } | null {
+    // Handle HTTPS URLs: https://github.com/owner/repo(.git)
+    const httpsMatch = repoUrl.match(/github\.com\/([^/]+)\/([^/.]+)/);
+    if (httpsMatch) return { owner: httpsMatch[1], repo: httpsMatch[2] };
+    // Handle SSH URLs: git@github.com:owner/repo.git
+    const sshMatch = repoUrl.match(/github\.com:([^/]+)\/([^/.]+)/);
+    if (sshMatch) return { owner: sshMatch[1], repo: sshMatch[2] };
+    return null;
+}
+
+async function createPRFromSandbox(
+    sandbox: SandboxInstance,
+    title: string,
+    body: string,
+    token: string,
+): Promise<PRResult> {
+    if (!sandbox.repoUrl) throw new Error("No repository URL — cannot create PR");
+
+    const parsed = parseGitHubRepo(sandbox.repoUrl);
+    if (!parsed) throw new Error(`Cannot parse GitHub owner/repo from: ${sandbox.repoUrl}`);
+
+    const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40);
+    const branch = `parallax/${slug}-${Math.floor(Date.now() / 1000)}`;
+
+    // Configure git user for the commit
+    await sandbox.runCommand(`git config user.email "parallax@bot"`);
+    await sandbox.runCommand(`git config user.name "Parallax"`);
+
+    // Create branch, stage, commit
+    const checkoutResult = await sandbox.runCommand(`git checkout -b "${branch}"`);
+    if (checkoutResult.startsWith("exit")) throw new Error(`Failed to create branch: ${checkoutResult}`);
+
+    await sandbox.runCommand(`git add -A`);
+
+    const commitResult = await sandbox.runCommand(`git commit -m "${title.replace(/"/g, '\\"')}"`);
+    if (commitResult.includes("nothing to commit")) throw new Error("No changes to commit");
+
+    // Push using token-authenticated HTTPS URL
+    const pushUrl = `https://x-access-token:${token}@github.com/${parsed.owner}/${parsed.repo}.git`;
+    const pushResult = await sandbox.runCommand(`git push "${pushUrl}" "${branch}"`);
+    if (pushResult.startsWith("exit") && !pushResult.includes("->" )) {
+        throw new Error(`Failed to push: ${pushResult}`);
+    }
+
+    // Create PR via GitHub REST API
+    const prResponse = await fetch(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}/pulls`, {
+        method: "POST",
+        headers: {
+            Authorization: `Bearer ${token}`,
+            Accept: "application/vnd.github+json",
+            "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+            title,
+            body: body || `Changes made by Parallax agent.`,
+            head: branch,
+            base: "main",
+        }),
+    });
+
+    if (!prResponse.ok) {
+        const errData = await prResponse.json().catch(() => ({}));
+        // If "main" doesn't exist, try "master"
+        if (prResponse.status === 422 && JSON.stringify(errData).includes("base")) {
+            const retryResponse = await fetch(`https://api.github.com/repos/${parsed.owner}/${parsed.repo}/pulls`, {
+                method: "POST",
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    Accept: "application/vnd.github+json",
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ title, body: body || `Changes made by Parallax agent.`, head: branch, base: "master" }),
+            });
+            if (!retryResponse.ok) {
+                const retryErr = await retryResponse.json().catch(() => ({}));
+                throw new Error(`GitHub API error: ${JSON.stringify(retryErr)}`);
+            }
+            const retryData = await retryResponse.json();
+            return { url: retryData.html_url, branch };
+        }
+        throw new Error(`GitHub API error: ${JSON.stringify(errData)}`);
+    }
+
+    const prData = await prResponse.json();
+    return { url: prData.html_url, branch };
+}
+
+// ── Auto-restart wrapper ─────────────────────────────────────
+//
+// Wraps a SandboxInstance so that any operation that fails with
+// a timeout/disconnect error automatically recreates the sandbox
+// (same config) and retries the operation once.
+
+/** Error patterns that indicate the sandbox timed out or was killed. */
+const TIMEOUT_PATTERNS = [
+    "timed out", "timeout", "ETIMEDOUT",
+    "sandbox not found", "sandbox has stopped",
+    "disconnected", "ECONNRESET", "ECONNREFUSED",
+    "socket hang up",
+];
+
+function isTimeoutError(err: unknown): boolean {
+    const msg = String(err instanceof Error ? err.message : err).toLowerCase();
+    return TIMEOUT_PATTERNS.some((p) => msg.includes(p.toLowerCase()));
+}
+
+export interface SandboxCreateOptions {
+    repoUrl?: string;
+    oidcToken?: string;
+    /** Called when the sandbox is recreated after a timeout — use to update external refs. */
+    onRestart?: (newInstance: SandboxInstance) => void;
+}
+
+function wrapWithAutoRestart(
+    inner: SandboxInstance,
+    opts: SandboxCreateOptions,
+): SandboxInstance {
+    let current = inner;
+
+    const recreate = async (): Promise<void> => {
+        console.log(`[sandbox] auto-restarting sandbox ${current.id}…`);
+        try { await current.stop(); } catch { /* best-effort cleanup */ }
+        const fresh = opts.oidcToken || process.env.VERCEL
+            ? await createVercelSandbox(opts.repoUrl, opts.oidcToken)
+            : createLocalSandbox(opts.repoUrl);
+        current = fresh;
+        // Propagate the new inner ID to the wrapper
+        wrapper.id = current.id;
+        opts.onRestart?.(wrapper);
+        console.log(`[sandbox] restarted → ${current.id}`);
+    };
+
+    /** Execute an operation; on timeout, recreate and retry once. */
+    const withRetry = async <T>(op: (s: SandboxInstance) => Promise<T>): Promise<T> => {
+        try {
+            return await op(current);
+        } catch (err) {
+            if (!isTimeoutError(err)) throw err;
+            await recreate();
+            return await op(current);
+        }
+    };
+
+    const wrapper: SandboxInstance = {
+        id: current.id,
+        get repoUrl() { return current.repoUrl; },
+
+        readFile: (filePath, offset?, limit?) =>
+            withRetry((s) => s.readFile(filePath, offset, limit)),
+
+        writeFile: (filePath, content) =>
+            withRetry((s) => s.writeFile(filePath, content)),
+
+        runCommand: (cmd) =>
+            withRetry((s) => s.runCommand(cmd)),
+
+        listDir: (dirPath) =>
+            withRetry((s) => s.listDir(dirPath)),
+
+        createPR: (title, body, token) =>
+            withRetry((s) => s.createPR(title, body, token)),
+
+        stop: () => current.stop(),
+    };
+
+    return wrapper;
 }
 
 // ── Factory ───────────────────────────────────────────────────
 
-export async function createSandbox(repoUrl?: string, oidcToken?: string): Promise<SandboxInstance> {
-    if (oidcToken || process.env.VERCEL) {
-        return createVercelSandbox(repoUrl, oidcToken);
-    }
-    return createLocalSandbox(repoUrl);
+export async function createSandbox(opts: SandboxCreateOptions = {}): Promise<SandboxInstance> {
+    const inner = (opts.oidcToken || process.env.VERCEL)
+        ? await createVercelSandbox(opts.repoUrl, opts.oidcToken)
+        : createLocalSandbox(opts.repoUrl);
+    return wrapWithAutoRestart(inner, opts);
 }

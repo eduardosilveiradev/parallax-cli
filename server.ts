@@ -254,7 +254,19 @@ app.post("/api/sandbox", async (req, res) => {
     const { repoUrl } = req.body;
     const oidcToken = req.headers["x-vercel-oidc-token"] as string | undefined;
     try {
-        const sandbox = await createSandbox(repoUrl, oidcToken);
+        const sandbox = await createSandbox({
+            repoUrl,
+            oidcToken,
+            onRestart: (restarted) => {
+                // Keep the map in sync when the wrapper auto-restarts
+                // Remove old entry, add new one
+                for (const [key, val] of activeSandboxes) {
+                    if (val === restarted) { activeSandboxes.delete(key); break; }
+                }
+                activeSandboxes.set(restarted.id, restarted);
+                console.log(`[sandbox] map updated → ${restarted.id}`);
+            },
+        });
         activeSandboxes.set(sandbox.id, sandbox);
         // List files in workspace root
         const files = await sandbox.listDir(".");
@@ -281,6 +293,25 @@ app.delete("/api/sandbox/:id", async (req, res) => {
         res.json({ ok: true });
     } catch (err: any) {
         res.status(500).json({ error: err.message });
+    }
+});
+
+app.post("/api/sandbox/:id/pr", async (req, res) => {
+    const sandbox = activeSandboxes.get(req.params.id);
+    if (!sandbox) return res.status(404).json({ error: "sandbox not found" });
+    if (!sandbox.repoUrl) return res.status(400).json({ error: "sandbox has no repo URL" });
+
+    const token = process.env.GITHUB_TOKEN;
+    if (!token) return res.status(400).json({ error: "GITHUB_TOKEN env var is not set" });
+
+    const { title, body } = req.body;
+    if (!title?.trim()) return res.status(400).json({ error: "title is required" });
+
+    try {
+        const result = await sandbox.createPR(title.trim(), body?.trim() || "", token);
+        res.json(result);
+    } catch (err: any) {
+        res.status(500).json({ error: err.message ?? "failed to create PR" });
     }
 });
 

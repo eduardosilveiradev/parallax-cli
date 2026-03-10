@@ -69,6 +69,8 @@ export interface StreamChunk {
     usage?: TokenUsage;
     /** Resolved model name (for dynamic routing like openrouter/free). */
     model?: string;
+    /** Provider-level status message (e.g. rate limit wait). */
+    status?: string;
 }
 
 /** The contract every LLM provider must implement. */
@@ -762,6 +764,37 @@ class GoogleProvider implements Provider {
 
     private get apiKey() { return process.env["GOOGLE_API_KEY"] ?? ""; }
 
+    // ── Rate limiter: 10 requests per 60s window ──────────────
+    private readonly MAX_RPM = 10;
+    private readonly WINDOW_MS = 60_000;
+    private readonly COOLDOWN_MS = 1_000;
+    private requestTimestamps: number[] = [];
+
+    private async waitForRateLimit(onWait?: (msg: string) => void): Promise<void> {
+        const now = Date.now();
+        // Evict timestamps outside the window
+        this.requestTimestamps = this.requestTimestamps.filter(
+            (t) => now - t < this.WINDOW_MS,
+        );
+        if (this.requestTimestamps.length >= this.MAX_RPM) {
+            // Wait until the oldest timestamp exits the window + cooldown
+            const oldest = this.requestTimestamps[0];
+            const waitMs = (oldest + this.WINDOW_MS) - now + this.COOLDOWN_MS;
+            if (waitMs > 0) {
+                const waitSec = Math.ceil(waitMs / 1000);
+                console.log(`[google] rate limit hit, waiting ${waitSec}s…`);
+                onWait?.(`Rate limit reached — waiting ${waitSec}s…`);
+                await new Promise((r) => setTimeout(r, waitMs));
+                // Re-evict after sleeping
+                const after = Date.now();
+                this.requestTimestamps = this.requestTimestamps.filter(
+                    (t) => after - t < this.WINDOW_MS,
+                );
+            }
+        }
+        this.requestTimestamps.push(Date.now());
+    }
+
     stream(
         messages: ChatMessage[],
         model: string,
@@ -813,85 +846,92 @@ class GoogleProvider implements Provider {
 
         const { push, end, iterator } = createStreamQueue();
 
-        const req = https.request(
-            {
-                hostname: "generativelanguage.googleapis.com",
-                path: `/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${this.apiKey}`,
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-            },
-            (res) => {
-                if (res.statusCode !== 200) {
-                    let errBody = "";
-                    res.on("data", (c) => (errBody += c));
-                    res.on("end", () => {
-                        push({ content: `[google error ${res.statusCode}] ${errBody}`, done: true });
-                        end();
-                    });
-                    return;
-                }
-
-                let buffer = "";
-                res.on("data", (chunk: Buffer) => {
-                    buffer += chunk.toString();
-                    const lines = buffer.split("\n");
-                    buffer = lines.pop() ?? "";
-                    for (const line of lines) {
-                        if (!line.startsWith("data: ")) continue;
-                        const data = line.slice(6).trim();
-                        if (!data || data === "[DONE]") continue;
-                        try {
-                            const json = JSON.parse(data);
-                            const candidate = json.candidates?.[0];
-                            if (!candidate) continue;
-                            const parts = candidate.content?.parts ?? [];
-                            for (const part of parts) {
-                                if (part.text && part.thought) {
-                                    // Gemini 2.5 thinking part
-                                    push({ reasoning: part.text, done: false });
-                                } else if (part.text) {
-                                    push({ content: part.text, done: false });
-                                }
-                                if (part.functionCall) {
-                                    push({
-                                        tool_calls: [{
-                                            id: `call_${Date.now()}`,
-                                            type: "function",
-                                            function: {
-                                                name: part.functionCall.name,
-                                                arguments: part.functionCall.args ?? {},
-                                            },
-                                        }],
-                                        done: false,
-                                    });
-                                }
-                            }
-                            if (candidate.finishReason) {
-                                const chunk: StreamChunk = { done: true };
-                                const um = json.usageMetadata;
-                                if (um) {
-                                    chunk.usage = {
-                                        promptTokens: um.promptTokenCount ?? 0,
-                                        completionTokens: um.candidatesTokenCount ?? 0,
-                                        totalTokens: um.totalTokenCount ?? 0,
-                                    };
-                                }
-                                push(chunk);
-                            }
-                        } catch { /* skip */ }
+        // Fire request after rate limit clears (async, iterator returned immediately)
+        const apiKey = this.apiKey;
+        this.waitForRateLimit((msg) => push({ status: msg, done: false })).then(() => {
+            const req = https.request(
+                {
+                    hostname: "generativelanguage.googleapis.com",
+                    path: `/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`,
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                },
+                (res) => {
+                    if (res.statusCode !== 200) {
+                        let errBody = "";
+                        res.on("data", (c) => (errBody += c));
+                        res.on("end", () => {
+                            push({ content: `[google error ${res.statusCode}] ${errBody}`, done: true });
+                            end();
+                        });
+                        return;
                     }
-                });
-                res.on("end", () => end());
-                res.on("error", () => end());
-            },
-        );
 
-        req.on("error", (err) => {
+                    let buffer = "";
+                    res.on("data", (chunk: Buffer) => {
+                        buffer += chunk.toString();
+                        const lines = buffer.split("\n");
+                        buffer = lines.pop() ?? "";
+                        for (const line of lines) {
+                            if (!line.startsWith("data: ")) continue;
+                            const data = line.slice(6).trim();
+                            if (!data || data === "[DONE]") continue;
+                            try {
+                                const json = JSON.parse(data);
+                                const candidate = json.candidates?.[0];
+                                if (!candidate) continue;
+                                const parts = candidate.content?.parts ?? [];
+                                for (const part of parts) {
+                                    if (part.text && part.thought) {
+                                        // Gemini 2.5 thinking part
+                                        push({ reasoning: part.text, done: false });
+                                    } else if (part.text) {
+                                        push({ content: part.text, done: false });
+                                    }
+                                    if (part.functionCall) {
+                                        push({
+                                            tool_calls: [{
+                                                id: `call_${Date.now()}`,
+                                                type: "function",
+                                                function: {
+                                                    name: part.functionCall.name,
+                                                    arguments: part.functionCall.args ?? {},
+                                                },
+                                            }],
+                                            done: false,
+                                        });
+                                    }
+                                }
+                                if (candidate.finishReason) {
+                                    const chunk: StreamChunk = { done: true };
+                                    const um = json.usageMetadata;
+                                    if (um) {
+                                        chunk.usage = {
+                                            promptTokens: um.promptTokenCount ?? 0,
+                                            completionTokens: um.candidatesTokenCount ?? 0,
+                                            totalTokens: um.totalTokenCount ?? 0,
+                                        };
+                                    }
+                                    push(chunk);
+                                }
+                            } catch { /* skip */ }
+                        }
+                    });
+                    res.on("end", () => end());
+                    res.on("error", () => end());
+                },
+            );
+
+            req.on("error", (err) => {
+                push({ content: `[google error] ${err.message}`, done: true });
+                end();
+            });
+            req.write(payload);
+            req.end();
+        }).catch((err) => {
             push({ content: `[google error] ${err.message}`, done: true });
             end();
         });
-        req.write(payload);
-        req.end();
 
         return iterator;
     }
