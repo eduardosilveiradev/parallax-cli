@@ -243,6 +243,68 @@ app.get("/api/models", async (_req, res) => {
 });
 
 
+// ─── 404 ────────────────────────────────────────────────────
+app.use((_req, res) => {
+    res.status(404).send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>404 – Parallax</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #0a0a0b;
+            color: #e4e4e7;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        .container {
+            text-align: center;
+            padding: 2rem;
+        }
+        .code {
+            font-size: 8rem;
+            font-weight: 800;
+            letter-spacing: -0.04em;
+            background: linear-gradient(135deg, #a78bfa, #818cf8, #6366f1);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            line-height: 1;
+        }
+        .message {
+            margin-top: 0.75rem;
+            font-size: 1.25rem;
+            color: #71717a;
+        }
+        .home {
+            display: inline-block;
+            margin-top: 2rem;
+            padding: 0.625rem 1.5rem;
+            border-radius: 0.5rem;
+            background: #18181b;
+            color: #a1a1aa;
+            text-decoration: none;
+            font-size: 0.875rem;
+            border: 1px solid #27272a;
+            transition: background 0.2s, color 0.2s;
+        }
+        .home:hover { background: #27272a; color: #e4e4e7; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="code">404</div>
+        <p class="message">This route doesn't exist.</p>
+        <a href="/" class="home">← Back to Parallax</a>
+    </div>
+</body>
+</html>`);
+});
+
 // ─── Start ──────────────────────────────────────────────────
 async function start() {
     // Connect to MCP servers
