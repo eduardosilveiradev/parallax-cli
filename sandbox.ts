@@ -106,9 +106,11 @@ function createLocalSandbox(repoUrl?: string): SandboxInstance {
 
     // Force ALL paths inside workDir — never let absolute paths escape
     const containPath = (p: string): string => {
-        // Strip drive letters (C:\...) and leading slashes to make relative
-        const stripped = p.replace(/^[a-zA-Z]:/, "").replace(/^[/\\]+/, "");
-        const resolved = path.resolve(workDir, stripped);
+        // If the path is absolute (drive letter or leading /), default to sandbox root
+        if (path.isAbsolute(p) || /^[a-zA-Z]:/.test(p)) {
+            return workDir;
+        }
+        const resolved = path.resolve(workDir, p);
         // Safety: ensure resolved path is actually inside workDir
         if (!resolved.startsWith(workDir)) {
             return workDir;

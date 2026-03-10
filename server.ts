@@ -63,9 +63,11 @@ if (API_KEY) {
 
 // Model availability
 app.get("/api/check", async (req, res) => {
+    if (process.env.NODE_ENV === "production" || process.env.VERCEL) {
+        return res.status(404).json({ error: "not available in production" });
+    }
     const { model } = req.query;
     const provider = getProvider(req.query.provider as string || "ollama");
-    console.log(provider)
     const modelInfo = await fetch(`http://localhost:11434/api/show`, {
         method: "POST",
         headers: {
