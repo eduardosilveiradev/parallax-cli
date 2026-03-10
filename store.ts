@@ -50,6 +50,34 @@ export function deriveTitle(messages: ChatMessage[]): string {
     return oneLine.length > 80 ? oneLine.slice(0, 77) + "…" : oneLine;
 }
 
+/** Generate a short title using qwen3:14b via Ollama. Falls back to deriveTitle. */
+export async function generateTitle(messages: ChatMessage[]): Promise<string> {
+    try {
+        const convo = messages
+            .filter((m) => m.role === "user" || m.role === "assistant")
+            .slice(0, 4)
+            .map((m) => `${m.role}: ${m.content.slice(0, 200)}`)
+            .join("\n");
+
+        const res = await fetch("http://localhost:11434/api/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                model: "qwen3:14b",
+                prompt: `/no_think\nGenerate a short title (max 6 words) for this conversation. Reply with ONLY the title, no quotes or punctuation.\n\n${convo}`,
+                stream: false,
+            }),
+        });
+
+        if (!res.ok) return deriveTitle(messages);
+        const data = (await res.json()) as { response?: string };
+        const title = (data.response ?? "").replace(/^["']|["']$/g, "").trim();
+        return title.length > 0 && title.length <= 80 ? title : deriveTitle(messages);
+    } catch {
+        return deriveTitle(messages);
+    }
+}
+
 // ── Storage backend interface ─────────────────────────────────
 
 interface StorageBackend {
