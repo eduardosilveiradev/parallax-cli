@@ -252,8 +252,9 @@ app.delete("/api/sessions/:id", async (req, res) => {
 // ─── Sandbox ────────────────────────────────────────────────
 app.post("/api/sandbox", async (req, res) => {
     const { repoUrl } = req.body;
+    const oidcToken = req.headers["x-vercel-oidc-token"] as string | undefined;
     try {
-        const sandbox = await createSandbox(repoUrl);
+        const sandbox = await createSandbox(repoUrl, oidcToken);
         activeSandboxes.set(sandbox.id, sandbox);
         // List files in workspace root
         const files = await sandbox.listDir(".");

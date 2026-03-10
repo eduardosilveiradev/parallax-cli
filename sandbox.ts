@@ -24,11 +24,12 @@ export interface SandboxInstance {
 
 // ── Vercel Sandbox backend ────────────────────────────────────
 
-async function createVercelSandbox(repoUrl?: string): Promise<SandboxInstance> {
+async function createVercelSandbox(repoUrl?: string, oidcToken?: string): Promise<SandboxInstance> {
     const { Sandbox } = await import("@vercel/sandbox");
 
     const sandbox = await Sandbox.create({
         runtime: "node24",
+        ...(oidcToken ? { oidcToken } : {}),
         ...(repoUrl ? { source: { type: "git" as const, url: repoUrl, depth: 1 } } : {}),
     });
 
@@ -212,11 +213,9 @@ function createLocalSandbox(repoUrl?: string): SandboxInstance {
 
 // ── Factory ───────────────────────────────────────────────────
 
-const isVercelProduction = !!process.env["VERCEL_OIDC_TOKEN"];
-
-export async function createSandbox(repoUrl?: string): Promise<SandboxInstance> {
-    if (isVercelProduction) {
-        return createVercelSandbox(repoUrl);
+export async function createSandbox(repoUrl?: string, oidcToken?: string): Promise<SandboxInstance> {
+    if (oidcToken || process.env.VERCEL) {
+        return createVercelSandbox(repoUrl, oidcToken);
     }
     return createLocalSandbox(repoUrl);
 }
