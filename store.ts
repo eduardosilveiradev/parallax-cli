@@ -22,6 +22,7 @@ export interface Conversation {
     updatedAt: string;
     messages: ChatMessage[];
     displayData?: Record<string, unknown>;
+    userId?: string;
 }
 
 export interface ConversationSummary {
@@ -82,10 +83,10 @@ export async function generateTitle(messages: ChatMessage[]): Promise<string> {
 
 interface StorageBackend {
     save(conv: Conversation): Promise<void>;
-    load(id: string): Promise<Conversation | null>;
-    list(): Promise<ConversationSummary[]>;
-    remove(id: string): Promise<boolean>;
-    removeAll(): Promise<number>;
+    load(id: string, userId?: string): Promise<Conversation | null>;
+    list(userId?: string): Promise<ConversationSummary[]>;
+    remove(id: string, userId?: string): Promise<boolean>;
+    removeAll(userId?: string): Promise<number>;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -117,9 +118,24 @@ function createNeonBackend(databaseUrl: string): StorageBackend {
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 messages JSONB NOT NULL DEFAULT '[]'::jsonb,
-                display_data JSONB
+                display_data JSONB,
+                user_id TEXT
             )
         `;
+        // Add user_id column if it doesn't exist (migration for existing tables)
+        await sql`
+            DO $$ BEGIN
+                ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id TEXT;
+            EXCEPTION
+                WHEN duplicate_column THEN NULL;
+            END $$
+        `.catch(() => { /* column already exists */ });
+
+        // Create index for efficient user-scoped queries
+        await sql`
+            CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations (user_id)
+        `.catch(() => { /* index already exists */ });
+
         initialized = true;
     };
 
@@ -131,23 +147,30 @@ function createNeonBackend(databaseUrl: string): StorageBackend {
             const displayDataJson = conv.displayData ? JSON.stringify(conv.displayData) : null;
             const createdAt = new Date(conv.createdAt).toISOString();
             const updatedAt = new Date(conv.updatedAt).toISOString();
+            const userId = conv.userId || null;
             await sql`
-                INSERT INTO conversations (id, title, model, provider, created_at, updated_at, messages, display_data)
-                VALUES (${conv.id}, ${conv.title}, ${conv.model}, ${conv.provider}, ${createdAt}, ${updatedAt}, ${messagesJson}::jsonb, ${displayDataJson}::jsonb)
+                INSERT INTO conversations (id, title, model, provider, created_at, updated_at, messages, display_data, user_id)
+                VALUES (${conv.id}, ${conv.title}, ${conv.model}, ${conv.provider}, ${createdAt}, ${updatedAt}, ${messagesJson}::jsonb, ${displayDataJson}::jsonb, ${userId})
                 ON CONFLICT (id) DO UPDATE SET
                     title = EXCLUDED.title,
                     model = EXCLUDED.model,
                     provider = EXCLUDED.provider,
                     updated_at = EXCLUDED.updated_at,
                     messages = EXCLUDED.messages,
-                    display_data = EXCLUDED.display_data
+                    display_data = EXCLUDED.display_data,
+                    user_id = COALESCE(conversations.user_id, EXCLUDED.user_id)
             `;
         },
 
-        async load(id) {
+        async load(id, userId) {
             await init();
             const sql = await getSql();
-            const rows = await sql`SELECT * FROM conversations WHERE id = ${id}` as Record<string, unknown>[];
+            let rows;
+            if (userId) {
+                rows = await sql`SELECT * FROM conversations WHERE id = ${id} AND user_id = ${userId}` as Record<string, unknown>[];
+            } else {
+                rows = await sql`SELECT * FROM conversations WHERE id = ${id}` as Record<string, unknown>[];
+            }
             if (rows.length === 0) return null;
             const r = rows[0]!;
             return {
@@ -159,16 +182,25 @@ function createNeonBackend(databaseUrl: string): StorageBackend {
                 updatedAt: String(r.updated_at),
                 messages: r.messages as ChatMessage[],
                 displayData: (r.display_data as Record<string, unknown>) ?? undefined,
+                userId: (r.user_id as string) ?? undefined,
             };
         },
 
-        async list() {
+        async list(userId) {
             await init();
             const sql = await getSql();
-            const rows = await sql`
-                SELECT id, title, model, provider, created_at, updated_at, messages
-                FROM conversations ORDER BY updated_at DESC
-            `;
+            let rows;
+            if (userId) {
+                rows = await sql`
+                    SELECT id, title, model, provider, created_at, updated_at, messages
+                    FROM conversations WHERE user_id = ${userId} ORDER BY updated_at DESC
+                `;
+            } else {
+                rows = await sql`
+                    SELECT id, title, model, provider, created_at, updated_at, messages
+                    FROM conversations ORDER BY updated_at DESC
+                `;
+            }
             return (rows as Record<string, unknown>[]).map((r) => {
                 const msgs = r.messages as ChatMessage[];
                 return {
@@ -186,17 +218,27 @@ function createNeonBackend(databaseUrl: string): StorageBackend {
             });
         },
 
-        async remove(id) {
+        async remove(id, userId) {
             await init();
             const sql = await getSql();
-            const rows = await sql`DELETE FROM conversations WHERE id = ${id} RETURNING id` as Record<string, unknown>[];
+            let rows;
+            if (userId) {
+                rows = await sql`DELETE FROM conversations WHERE id = ${id} AND user_id = ${userId} RETURNING id` as Record<string, unknown>[];
+            } else {
+                rows = await sql`DELETE FROM conversations WHERE id = ${id} RETURNING id` as Record<string, unknown>[];
+            }
             return rows.length > 0;
         },
 
-        async removeAll() {
+        async removeAll(userId) {
             await init();
             const sql = await getSql();
-            const rows = await sql`DELETE FROM conversations RETURNING id` as Record<string, unknown>[];
+            let rows;
+            if (userId) {
+                rows = await sql`DELETE FROM conversations WHERE user_id = ${userId} RETURNING id` as Record<string, unknown>[];
+            } else {
+                rows = await sql`DELETE FROM conversations RETURNING id` as Record<string, unknown>[];
+            }
             return rows.length;
         },
     };
@@ -210,41 +252,56 @@ function createFsBackend(): StorageBackend {
     const PARALLAX_DIR = path.join(os.homedir(), ".parallax");
     const CONVERSATIONS_DIR = path.join(PARALLAX_DIR, "conversations");
 
-    const ensureDir = async () => {
-        await fs.mkdir(CONVERSATIONS_DIR, { recursive: true });
+    const userDir = (userId?: string) => {
+        if (!userId) return CONVERSATIONS_DIR;
+        return path.join(CONVERSATIONS_DIR, userId);
+    };
+
+    const ensureDir = async (userId?: string) => {
+        await fs.mkdir(userDir(userId), { recursive: true });
     };
 
     return {
         async save(conv) {
-            await ensureDir();
+            await ensureDir(conv.userId);
+            const dir = userDir(conv.userId);
             await fs.writeFile(
-                path.join(CONVERSATIONS_DIR, `${conv.id}.json`),
+                path.join(dir, `${conv.id}.json`),
                 JSON.stringify(conv, null, 2),
                 "utf-8",
             );
         },
 
-        async load(id) {
-            try {
-                const raw = await fs.readFile(
-                    path.join(CONVERSATIONS_DIR, `${id}.json`),
-                    "utf-8",
-                );
-                return JSON.parse(raw) as Conversation;
-            } catch {
-                return null;
+        async load(id, userId) {
+            // Try user-scoped directory first, then fallback to root (for migration)
+            const dirs = userId ? [userDir(userId), CONVERSATIONS_DIR] : [CONVERSATIONS_DIR];
+            for (const dir of dirs) {
+                try {
+                    const raw = await fs.readFile(
+                        path.join(dir, `${id}.json`),
+                        "utf-8",
+                    );
+                    const conv = JSON.parse(raw) as Conversation;
+                    // Enforce userId match if requested
+                    if (userId && conv.userId && conv.userId !== userId) continue;
+                    return conv;
+                } catch {
+                    continue;
+                }
             }
+            return null;
         },
 
-        async list() {
-            await ensureDir();
-            const files = await fs.readdir(CONVERSATIONS_DIR);
+        async list(userId) {
+            const dir = userDir(userId);
+            await ensureDir(userId);
+            const files = await fs.readdir(dir);
             const summaries: ConversationSummary[] = [];
             for (const file of files) {
                 if (!file.endsWith(".json")) continue;
                 try {
                     const raw = await fs.readFile(
-                        path.join(CONVERSATIONS_DIR, file),
+                        path.join(dir, file),
                         "utf-8",
                     );
                     const conv = JSON.parse(raw) as Conversation;
@@ -268,22 +325,24 @@ function createFsBackend(): StorageBackend {
             return summaries;
         },
 
-        async remove(id) {
+        async remove(id, userId) {
+            const dir = userDir(userId);
             try {
-                await fs.unlink(path.join(CONVERSATIONS_DIR, `${id}.json`));
+                await fs.unlink(path.join(dir, `${id}.json`));
                 return true;
             } catch {
                 return false;
             }
         },
 
-        async removeAll() {
-            await ensureDir();
-            const files = await fs.readdir(CONVERSATIONS_DIR);
+        async removeAll(userId) {
+            const dir = userDir(userId);
+            await ensureDir(userId);
+            const files = await fs.readdir(dir);
             let count = 0;
             for (const file of files) {
                 if (!file.endsWith(".json")) continue;
-                await fs.unlink(path.join(CONVERSATIONS_DIR, file));
+                await fs.unlink(path.join(dir, file));
                 count++;
             }
             return count;
@@ -300,10 +359,10 @@ const backend: StorageBackend = process.env.DATABASE_URL
     : (() => { console.log("📦 Store: local filesystem (~/.parallax/conversations/)"); return createFsBackend(); })();
 
 export const saveConversation = (conv: Conversation) => backend.save(conv);
-export const loadConversation = (id: string) => backend.load(id);
-export const listConversations = () => backend.list();
-export const deleteConversation = (id: string) => backend.remove(id);
-export const deleteAllConversations = () => backend.removeAll();
+export const loadConversation = (id: string, userId?: string) => backend.load(id, userId);
+export const listConversations = (userId?: string) => backend.list(userId);
+export const deleteConversation = (id: string, userId?: string) => backend.remove(id, userId);
+export const deleteAllConversations = (userId?: string) => backend.removeAll(userId);
 
 // ── Last-used model (derived from most recent conversation) ────
 

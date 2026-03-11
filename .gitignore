@@ -5,3 +5,5 @@ dist
 .env*.local
 
 .parallax-sandbox
+
+better-auth_migrations

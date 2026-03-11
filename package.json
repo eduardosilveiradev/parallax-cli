@@ -14,7 +14,7 @@
 	},
 	"scripts": {
 		"dev": "tsx --watch --env-file=.env index.tsx",
-		"serve": "tsx --watch --env-file=.env server.ts",
+		"serve": "tsx --watch --env-file=.env --env-file=.env.local server.ts",
 		"build": "tsc",
 		"start": "node dist/index.js",
 		"start:server": "node dist/server.js",
@@ -33,10 +33,12 @@
 	},
 	"homepage": "https://github.com/eduardosilveiradev/parallax-cli#readme",
 	"dependencies": {
+		"@better-auth/infra": "^0.1.8",
 		"@modelcontextprotocol/sdk": "^1.27.1",
 		"@neondatabase/serverless": "^1.0.2",
 		"@types/yargs": "^17.0.35",
 		"@vercel/sandbox": "^1.8.1",
+		"better-auth": "^1.5.4",
 		"chalk": "^5.6.2",
 		"cors": "^2.8.6",
 		"diff": "^8.0.3",

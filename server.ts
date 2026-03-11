@@ -1,5 +1,7 @@
 import express from "express";
 import cors from "cors";
+import { toNodeHandler, fromNodeHeaders } from "better-auth/node";
+import { auth } from "./auth.js";
 import { runAgent, type AgentMode } from "./agent.js";
 import {
     type MCPConnection,
@@ -37,7 +39,23 @@ const sessionQueues = new Map<string, string[]>();
 // Active sandboxes per session
 const activeSandboxes = new Map<string, SandboxInstance>();
 
-app.use(cors());
+// ─── CORS (credentials required for auth cookies) ───────────
+app.use(cors({
+    origin: [
+        "http://localhost:7000",
+        "http://localhost:3000",
+        process.env.FRONTEND_URL || "",
+        "https://useparallax.dev",
+        "https://www.useparallax.dev",
+    ].filter(Boolean),
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+}));
+
+// ─── Better Auth handler (MUST be before express.json) ──────
+app.all("/api/auth/*splat", toNodeHandler(auth));
+
+// JSON body parsing (after auth handler — see Better Auth docs)
 app.use(express.json());
 
 // Logging
@@ -46,19 +64,58 @@ app.use((req, _res, next) => {
     next();
 });
 
-// ─── Auth ────────────────────────────────────────────────────
+// ─── Auth middleware ─────────────────────────────────────────
 const API_KEY = process.env.PARALLAX_API_KEY;
-if (API_KEY) {
-    app.use("/api", (req, res, next) => {
-        if (req.headers["x-api-key"] !== API_KEY) {
-            res.status(401).json({ error: "unauthorized" });
-            return;
+
+/** Helper to get userId from res.locals (set by requireAuth middleware). */
+function getUserId(res: express.Response): string {
+    return res.locals.userId as string;
+}
+
+/**
+ * Auth middleware: checks session cookie OR API key header.
+ * Sets res.locals.userId on success, returns 401 on failure.
+ */
+async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
+    // 1. Try API key (for CLI / programmatic access)
+    if (API_KEY && req.headers["x-api-key"] === API_KEY) {
+        res.locals.userId = "__api_key__";
+        return next();
+    }
+
+    // 2. Try session cookie (for web UI)
+    try {
+        const session = await auth.api.getSession({
+            headers: fromNodeHeaders(req.headers),
+        });
+        if (session?.user?.id) {
+            res.locals.userId = session.user.id;
+            return next();
         }
-        next();
-    });
-    console.log("🔒 API key authentication enabled");
+    } catch {
+        // Session lookup failed, fall through
+    }
+
+    // 3. If no API key is configured and no DB, allow unauthenticated access (local dev)
+    if (!API_KEY && !process.env.DATABASE_URL) {
+        res.locals.userId = "__local__";
+        return next();
+    }
+
+    res.status(401).json({ error: "unauthorized" });
+}
+
+// Apply auth to all /api/* routes (except /api/auth/*)
+app.use("/api", (req, res, next) => {
+    // Skip auth handler routes — they're handled by Better Auth above
+    if (req.path.startsWith("/auth/")) return next();
+    requireAuth(req, res, next);
+});
+
+if (API_KEY) {
+    console.log("🔒 API key authentication enabled (also accepts session cookies)");
 } else {
-    console.log("⚠️  No PARALLAX_API_KEY set — API is open (local dev mode)");
+    console.log("🔐 Session-based authentication enabled");
 }
 
 // Model availability
@@ -82,6 +139,7 @@ app.get("/api/check", async (req, res) => {
 
 // ─── Chat (SSE) ─────────────────────────────────────────────
 app.post("/api/chat", async (req, res) => {
+    const userId = getUserId(res);
     const {
         prompt,
         history = [],
@@ -171,7 +229,7 @@ app.post("/api/chat", async (req, res) => {
                     send("model_info", { model: event.model });
                     break;
                 case "checkpoint": {
-                    const existingC = await loadConversation(convId);
+                    const existingC = await loadConversation(convId, userId);
                     saveConversation({
                         id: convId,
                         title: deriveTitle(event.messages),
@@ -181,12 +239,13 @@ app.post("/api/chat", async (req, res) => {
                         updatedAt: new Date().toISOString(),
                         messages: event.messages,
                         displayData: existingC?.displayData,
+                        userId,
                     }).catch(() => { });
                     send("checkpoint", { sessionId: convId });
                     break;
                 }
                 case "done": {
-                    const existingD = await loadConversation(convId);
+                    const existingD = await loadConversation(convId, userId);
                     saveConversation({
                         id: convId,
                         title: deriveTitle(event.messages),
@@ -196,6 +255,7 @@ app.post("/api/chat", async (req, res) => {
                         updatedAt: new Date().toISOString(),
                         messages: event.messages,
                         displayData: existingD?.displayData,
+                        userId,
                     }).catch(() => { });
                     send("done", {
                         sessionId: convId,
@@ -225,18 +285,18 @@ app.post("/api/chat/:id/queue", (req, res) => {
 });
 
 // ─── Sessions ───────────────────────────────────────────────
-app.get("/api/sessions", async (_req, res) => {
-    res.json(await listConversations());
+app.get("/api/sessions", async (req, res) => {
+    res.json(await listConversations(getUserId(res)));
 });
 
 app.get("/api/sessions/:id", async (req, res) => {
-    const conv = await loadConversation(req.params.id);
+    const conv = await loadConversation(req.params.id, getUserId(res));
     if (!conv) return res.status(404).json({ error: "not found" });
     res.json(conv);
 });
 
 app.patch("/api/sessions/:id", async (req, res) => {
-    const conv = await loadConversation(req.params.id);
+    const conv = await loadConversation(req.params.id, getUserId(res));
     if (!conv) return res.status(404).json({ error: "not found" });
     if (req.body.displayData) conv.displayData = req.body.displayData;
     conv.updatedAt = new Date().toISOString();
@@ -245,7 +305,7 @@ app.patch("/api/sessions/:id", async (req, res) => {
 });
 
 app.delete("/api/sessions/:id", async (req, res) => {
-    await deleteConversation(req.params.id);
+    await deleteConversation(req.params.id, getUserId(res));
     res.json({ ok: true });
 });
 
