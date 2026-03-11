@@ -39,6 +39,7 @@ export const auth = betterAuth({
         "https://www.useparallax.dev",
     ].filter(Boolean),
     plugins: [
-        dash()
+        // dash() uses samlify which has a broken ESM dep (camelcase@9) — skip on Vercel
+        ...(process.env.VERCEL ? [] : [dash()]),
     ]
 });
