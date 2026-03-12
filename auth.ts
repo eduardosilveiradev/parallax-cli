@@ -7,12 +7,21 @@
 
 import { betterAuth } from "better-auth";
 import { Pool } from "@neondatabase/serverless";
-import { dash } from "@better-auth/infra";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 if (!DATABASE_URL) {
     console.warn("⚠️  No DATABASE_URL set — auth will not work without a database.");
 }
+
+// dash() pulls in samlify which tries to require() camelcase@9 (ESM-only),
+// causing ERR_REQUIRE_ESM in serverless runtimes.  We use top-level await
+// (safe in ESM — Node serialises module init) so the static import never
+// runs in environments where it would break (VERCEL / Lambda).
+const dashPlugins = process.env.VERCEL
+    ? []
+    : await import("@better-auth/infra")
+          .then(({ dash }) => [dash()])
+          .catch(() => []);
 
 export const auth = betterAuth({
     database: DATABASE_URL
@@ -38,8 +47,5 @@ export const auth = betterAuth({
         "https://useparallax.dev",
         "https://www.useparallax.dev",
     ].filter(Boolean),
-    plugins: [
-        // dash() uses samlify which has a broken ESM dep (camelcase@9) — skip on Vercel
-        ...(process.env.VERCEL ? [] : [dash()]),
-    ]
+    plugins: dashPlugins,
 });
