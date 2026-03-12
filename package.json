@@ -35,6 +35,7 @@
 	"dependencies": {
 		"@better-auth/infra": "^0.1.8",
 		"@modelcontextprotocol/sdk": "^1.27.1",
+		"@modelcontextprotocol/server-filesystem": "^2026.1.14",
 		"@neondatabase/serverless": "^1.0.2",
 		"@types/yargs": "^17.0.35",
 		"@vercel/sandbox": "^1.8.1",
