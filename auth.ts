@@ -27,6 +27,7 @@ export const auth = betterAuth({
     database: DATABASE_URL
         ? new Pool({ connectionString: DATABASE_URL })
         : undefined as any,
+    baseURL: process.env.BETTER_AUTH_URL,
     basePath: "/api/auth",
     secret: process.env.BETTER_AUTH_SECRET,
     emailAndPassword: {
