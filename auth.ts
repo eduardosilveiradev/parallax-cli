@@ -46,6 +46,7 @@ export const auth = betterAuth({
         process.env.FRONTEND_URL || "",
         "https://useparallax.dev",
         "https://www.useparallax.dev",
+        "https://app.useparallax.dev",
     ].filter(Boolean),
     plugins: dashPlugins,
 });

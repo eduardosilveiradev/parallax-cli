@@ -27,7 +27,7 @@ const DEFAULT_MCP_SERVERS: MCPServerConfig[] = [
     {
         name: "filesystem",
         command: "npx",
-        args: ["-y", "@modelcontextprotocol/server-filesystem", process.cwd()],
+        args: ["@modelcontextprotocol/server-filesystem", process.cwd()],
     },
 ];
 
@@ -47,6 +47,7 @@ app.use(cors({
         process.env.FRONTEND_URL || "",
         "https://useparallax.dev",
         "https://www.useparallax.dev",
+        "https://app.useparallax.dev",
     ].filter(Boolean),
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
