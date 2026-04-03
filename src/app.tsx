@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
 import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
@@ -16,13 +16,13 @@ import type { MessageBlock, ToolCallInfo } from './agent/types.js';
 import { VALID_GEMINI_MODELS } from '@google/gemini-cli-core';
 
 
+
 marked.setOptions({ renderer: new TerminalRenderer() as any });
 
 const MODEL = 'gemini-3-flash-preview';
 
 const AVAILABLE_COMMANDS = [
   { cmd: '/model', desc: 'Change the current model (e.g. /model gemini-1.5-pro)' },
-  { cmd: '/clear', desc: 'Clear the current conversation' },
   { cmd: '/new', desc: 'Starts a brand new session and clears the screen' },
   { cmd: '/init', desc: 'Analyze codebase and create PARALLAX.md' },
   { cmd: '/compact', desc: 'Summarize and compress conversation history to save tokens' },
@@ -73,7 +73,7 @@ function ListPicker({ items, label, onSelect, onCancel }: { items: { id: string;
   );
 }
 
-export default function App() {
+export default function App({ initialPrompt }: { initialPrompt?: string } = {}) {
   const { exit } = useApp();
   const [sessionId, setSessionId] = useState(() => crypto.randomBytes(4).toString('hex'));
   const HISTORY_FILE = path.join(os.homedir(), '.parallax', `${sessionId}.json`);
@@ -90,6 +90,8 @@ export default function App() {
   const [availableSessions, setAvailableSessions] = useState<{ id: string; label: string; detail?: string }[]>([]);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
   const [commandIndex, setCommandIndex] = useState(0);
+  const suppressInputHandling = useRef(false);
+  const hasInitialized = useRef(false);
 
   useEffect(() => { setCommandIndex(0); }, [query]);
 
@@ -111,7 +113,7 @@ export default function App() {
 
   useEffect(() => {
     fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
-    if (blocks.length > 0 || messages.length > 0) {
+    if (messages.length > 0) {
       fs.writeFileSync(HISTORY_FILE, JSON.stringify({ blocks, messages }, null, 2));
     }
   }, [blocks, messages]);
@@ -142,17 +144,24 @@ export default function App() {
       }
     }
 
+    if (key.ctrl && typeof input === 'string') {
+      suppressInputHandling.current = true;
+      setTimeout(() => { suppressInputHandling.current = false; }, 50);
+    }
+
     if (key.ctrl && input === 'o') {
       setToolsExpanded(!toolsExpanded);
     } else if (key.ctrl && input === 'c') {
       if (isStreaming && abortController) {
         abortController.abort();
+        setIsStreaming(false);
       } else {
         setExitPrompted(true);
       }
     } else if (key.escape) {
       if (isStreaming && abortController) {
         abortController.abort();
+        setIsStreaming(false);
       }
     }
   });
@@ -188,7 +197,7 @@ export default function App() {
             setIsSelectingModel(true);
           }
           return;
-        } else if (command === '/clear' || command === '/new') {
+        } else if (command === '/new') {
           const freshId = crypto.randomBytes(4).toString('hex');
           setSessionId(freshId);
           setBlocks([{ type: 'assistant', text: `Created new session: ${freshId}` }]);
@@ -245,7 +254,12 @@ export default function App() {
                   const id = f.replace('.json', '');
                   let detail = '';
                   try {
-                    const data = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+                    const filePath = path.join(dir, f);
+                    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                    if (!data.messages || data.messages.length === 0) {
+                      try { fs.unlinkSync(filePath); } catch {} // Cleanup empty sessions
+                      return null;
+                    }
                     const blks = data.blocks || [];
                     for (let i = blks.length - 1; i >= 0; i--) {
                       if (blks[i].type === 'user' || blks[i].type === 'assistant') {
@@ -255,9 +269,11 @@ export default function App() {
                         break;
                       }
                     }
-                  } catch {}
-                  return { id, label: id, detail };
-                });
+                    return { id, label: id, detail };
+                  } catch {
+                    return null;
+                  }
+                }).filter(Boolean) as { id: string; label: string; detail: string }[];
                 if (items.length === 0) items = [{ id: sessionId, label: sessionId, detail: '' }];
                 setAvailableSessions(items.reverse()); // Show newest first ideally but simple reverse works
                 setIsSelectingSession(true);
@@ -366,6 +382,13 @@ export default function App() {
     [messages, isStreaming, currentModel, commandIndex]
   );
 
+  useEffect(() => {
+    if (initialPrompt && !hasInitialized.current) {
+      hasInitialized.current = true;
+      handleSubmit(initialPrompt);
+    }
+  }, [initialPrompt, handleSubmit]);
+
   return (
     <Box flexDirection="column" padding={1} marginLeft={1}>
       <Box flexDirection="column" marginBottom={1}>
@@ -446,7 +469,17 @@ export default function App() {
       {!isStreaming && !isSelectingModel && !isSelectingSession && (
         <Box marginTop={1}>
           <Text color="cyan" bold>❯ </Text>
-          <TextInput value={query} onChange={setQuery} onSubmit={handleSubmit} />
+          <TextInput 
+             value={query} 
+             onChange={(val) => {
+               if (suppressInputHandling.current) {
+                 suppressInputHandling.current = false;
+                 return;
+               }
+               setQuery(val);
+             }} 
+             onSubmit={handleSubmit} 
+          />
         </Box>
       )}
 
