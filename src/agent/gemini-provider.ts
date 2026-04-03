@@ -117,7 +117,11 @@ export class GeminiProvider implements AgentProvider {
 
   private zodToJsonSchema(schema: any) {
     try {
-      const jsonSchema = zodToJsonSchema(schema);
+      let jsonSchema = schema;
+      // If it looks like a Zod object, convert it. Otherwise treat it as a raw JSON schema.
+      if (schema && typeof schema._def === 'object') {
+        jsonSchema = zodToJsonSchema(schema);
+      }
       const cleaned = this.cleanSchema(jsonSchema);
       cleaned.type = 'OBJECT'; 
       delete cleaned.additionalProperties; 

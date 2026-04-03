@@ -5,6 +5,7 @@ export interface ToolLoopAgentSettings {
   systemInstruction?: string;
   tools?: ToolSet;
   maxSteps?: number;
+  onConfirm?: (tool: { id: string; name: string; input: any }) => Promise<boolean>;
 }
 
 export class ToolLoopAgent {
@@ -12,12 +13,14 @@ export class ToolLoopAgent {
   private systemInstruction?: string;
   private tools?: ToolSet;
   private maxSteps: number;
+  private onConfirm?: (tool: { id: string; name: string; input: any }) => Promise<boolean>;
 
   constructor(settings: ToolLoopAgentSettings) {
     this.provider = settings.provider;
     this.systemInstruction = settings.systemInstruction;
     this.tools = settings.tools;
     this.maxSteps = settings.maxSteps ?? 10;
+    this.onConfirm = settings.onConfirm;
   }
 
   async *stream(messages: any[]): AsyncGenerator<StreamPart, void, unknown> {
@@ -51,7 +54,16 @@ export class ToolLoopAgent {
           const toolDef = this.tools?.[tc.name];
           let output;
           if (toolDef) {
-            output = await toolDef.execute(tc.input);
+            if (toolDef.requiresConfirmation && this.onConfirm) {
+              const approved = await this.onConfirm({ id: tc.id, name: tc.name, input: tc.input });
+              if (!approved) {
+                output = { error: 'User denied execute permission.' };
+              } else {
+                output = await toolDef.execute(tc.input);
+              }
+            } else {
+              output = await toolDef.execute(tc.input);
+            }
           } else {
             output = { error: `Tool ${tc.name} not found` };
           }

@@ -1,55 +1,32 @@
-# Parallax CLI Architecture & Codebase Overview
+# Parallax CLI: Architecture & System Overview
 
-Parallax CLI is a sophisticated, React-powered terminal-based coding assistant designed to interface with Google's Gemini models. It leverages the `ink` library to provide a rich, interactive command-line interface that supports multi-turn conversations, tool-driven automation, and session management.
+Parallax is a high-performance, terminal-based AI coding assistant built with **React** and **Ink**. It leverages the **Google Gemini** family of models to provide a seamless, tool-augmented development experience directly from the command line.
 
-## 1. Core Architectural Pillars
+## Core Architectural Pillars
 
-The codebase is organized into a clean, layered architecture that separates the user interface, the reasoning agent, the model provider, and the underlying system tools.
+1.  **Reactive UI Layer (`src/app.tsx`)**:
+    Utilizes `ink` to manage a complex, stateful terminal interface. It handles real-time streaming, interactive pickers (for models and sessions), and a custom command-line interface with auto-suggestion capabilities for slash commands (`/model`, `/new`, `/init`, `/compact`, `/load`).
 
-### UI Layer (`src/index.tsx`, `src/app.tsx`)
-- **Entry Point**: `src/index.tsx` initializes the terminal environment and renders the main `App` component.
-- **Ink Component**: `src/app.tsx` manages the terminal UI lifecycle. It uses React hooks (`useState`, `useEffect`, `useCallback`) to handle complex state transitions during streaming and tool execution.
-- **Session Management**: Sessions are uniquely identified and persisted locally in `~/.parallax/` as JSON files, allowing users to load and resume previous coding contexts using the `/load` command.
-- **Command Dispatcher**: Implements a slash-command system (`/model`, `/clear`, `/init`, `/compact`) providing advanced control over the agent's behavior and model settings.
+2.  **Agent Orchestration (`src/agent/`)**:
+    *   **ToolLoopAgent**: A manual implementation of the ReAct (Reasoning and Acting) loop. It manages multi-step interactions where the model can call multiple tools sequentially before returning a final response.
+    *   **GeminiProvider**: A dedicated provider that maps internal message structures to the Gemini API requirements, supporting system instructions and native tool definitions.
+    *   **Streaming**: Supports granular delta updates for both text and tool call states, providing immediate feedback during long-running operations.
 
-### Agent Layer (`src/agent/agent.ts`)
-- **ToolLoopAgent**: This class orchestrates the "think-act-observe" loop. It manages the recursion required when a model emits multiple tool calls sequentially.
-- **Streaming Logic**: Implements an `AsyncGenerator` that yields fine-grained `StreamPart` objects (`text-delta`, `tool-call`, `tool-result`). This allows the UI to update in real-time as the agent works.
-- **Context Injection**: Automatically merges tool results back into the message history, maintaining a consistent state for the LLM to process.
+3.  **Tooling System (`src/tools.ts`)**:
+    A set of secure, asynchronous primitive tools that grant the agent capabilities to:
+    *   `listDirectory`: Inspect workspace structure.
+    *   `readFile` / `writeFile`: Manipulate source code with high-capacity buffers.
+    *   `runCommand`: Execute shell commands, enabling compilation, testing, and git operations.
 
-### Provider Layer (`src/agent/gemini-provider.ts`)
-- **Abstraction**: Defines the `AgentProvider` interface, which decouples the agent logic from the specific model API.
-- **Gemini Adapter**: Specifically wraps `@google/gemini-cli-core` and `@google/genai`. It handles the nuances of the Gemini API, including Google OAuth authentication (`AuthType.LOGIN_WITH_GOOGLE`).
-- **Schema Mapping**: Dynamically converts Zod validation schemas into Google's expected function declaration format, enabling type-safe tool calls.
-- **Resilience**: Features built-in exponential backoff and retry logic for handling rate limits (HTTP 429), ensuring a stable user experience.
+4.  **Session & Context Management**:
+    *   **Persistence**: Conversations are automatically serialized to `~/.parallax/[session-id].json`, allowing for seamless state recovery across restarts.
+    *   **Context Compaction**: The `/compact` command uses the LLM to recursively summarize history, effectively managing the context window and optimizing token consumption for long-running projects.
 
-### Tool Layer (`src/tools.ts`)
-- **Primitive Capabilities**: Exposes a `ToolSet` that gives the agent direct access to the local environment.
-- **Available Tools**:
-    - `listDirectory`: High-level filesystem traversal.
-    - `readFile`: Content retrieval with a 100k character buffer safety.
-    - `writeFile`: Atomic file creation and directory path auto-resolution.
-    - `runCommand`: Shell execution via `child_process.exec`, allowing the agent to run compilers, linters, or test suites.
+## Developer & System Guidelines
 
-## 2. Key Data Structures (`src/agent/types.ts`)
-- **StreamPart**: A union type representing all possible events in an agent's turn.
-- **MessageBlock**: Defines how the UI segments content into User, Assistant, Tool, and Error blocks for rendering.
-- **ToolSet**: A registry of available functions mapped to their JSON schemas and execution handlers.
+*   **Language**: Responds in the user's preferred language.
+*   **Proactivity**: Always prioritizes tool usage for information gathering and implementation.
+*   **Performance**: Employs console patching (`src/patch-console.js`) to suppress noisy library logs, ensuring a clean UI.
+*   **Safety**: Implements abort controllers for interrupting model generations or rogue tool executions via `Ctrl+C` or `Esc`.
 
-## 3. Design Philosophy
-- **Real-time Feedback**: Every part of the agent's turn is streamed to the UI, from raw text to the live execution status of background tools.
-- **Transparency**: The UI explicitly shows which tools are being called and their outputs (toggleable via Ctrl+O), preventing "hidden" system changes.
-- **Context Preservation**: Advanced commands like `/compact` use LLM-driven summarization to shrink conversation history while preserving critical architectural and decision-making context, optimizing token usage for long-running sessions.
-- **Safety**: While powerful, tool execution is performed within the user's terminal context, giving the user final control via standard terminal signals (Ctrl+C).
-
-## 4. Execution Flow
-1. User enters a query or slash command via the `TextInput`.
-2. `App` component captures input and initiates a stream from the `ToolLoopAgent`.
-3. `ToolLoopAgent` calls the `GeminiProvider` with the current message history and system instructions.
-4. Gemini emits a response. If it includes a `functionCall`, the agent pauses the text stream.
-5. The agent executes the corresponding handler from `allTools`.
-6. The result is appended to the message history, and the agent automatically triggers a new generation turn.
-7. The loop continues until the model produces a terminal `STOP` reason or reaches `maxSteps`.
-8. The final state is automatically persisted to the local history file.
-
-This codebase serves as a blueprint for a modern, extensible, and powerful LLM-powered developer tool.
+This document serves as the ground truth for the Parallax agent's environment and capabilities.

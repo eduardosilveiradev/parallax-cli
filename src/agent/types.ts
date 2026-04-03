@@ -28,6 +28,7 @@ export interface ToolDefinition {
   description: string;
   parameters: any;
   execute: (args: any) => Promise<unknown>;
+  requiresConfirmation?: boolean;
 }
 
 export type ToolSet = Record<string, ToolDefinition>;

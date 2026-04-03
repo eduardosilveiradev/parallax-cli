@@ -47,6 +47,7 @@ export const allTools: ToolSet = {
   },
   writeFile: {
     description: 'Write to a file',
+    requiresConfirmation: true,
     parameters: {
       type: 'object',
       properties: { path: { type: 'string' }, content: { type: 'string' } },
@@ -65,6 +66,7 @@ export const allTools: ToolSet = {
   },
   runCommand: {
     description: 'Run a shell command',
+    requiresConfirmation: true,
     parameters: {
       type: 'object',
       properties: { command: { type: 'string' } },

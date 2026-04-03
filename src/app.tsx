@@ -92,6 +92,10 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
   const [commandIndex, setCommandIndex] = useState(0);
   const suppressInputHandling = useRef(false);
   const hasInitialized = useRef(false);
+  const [yoloMode, setYoloMode] = useState(false);
+  const yoloModeRef = useRef(yoloMode);
+  useEffect(() => { yoloModeRef.current = yoloMode; }, [yoloMode]);
+  const [pendingConfirm, setPendingConfirm] = useState<{ id: string; name: string; input: any; resolve: (b: boolean) => void } | null>(null);
 
   useEffect(() => { setCommandIndex(0); }, [query]);
 
@@ -119,9 +123,39 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
   }, [blocks, messages]);
 
   useInput((input: string, key: any) => {
+    if (key.shift && key.tab) {
+      setYoloMode(v => !v);
+      return;
+    }
+
+    if (pendingConfirm) {
+      if (input.toLowerCase() === 'y' || key.return) {
+        pendingConfirm.resolve(true);
+        setPendingConfirm(null);
+      } else if (input.toLowerCase() === 'n' || key.escape || (key.ctrl && input === 'c')) {
+        pendingConfirm.resolve(false);
+        setPendingConfirm(null);
+        if (key.ctrl && input === 'c') {
+          if (isStreaming && abortController) {
+            abortController.abort();
+            setIsStreaming(false);
+          } else {
+            setExitPrompted(true);
+          }
+        } else if (key.escape) {
+          if (isStreaming && abortController) {
+            abortController.abort();
+            setIsStreaming(false);
+          }
+        }
+      }
+      return;
+    }
+
     if (exitPrompted) {
       if (key.ctrl && input === 'c') {
         exit();
+        process.exit(0);
       } else {
         setExitPrompted(false);
       }
@@ -299,7 +333,13 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       const agent = new ToolLoopAgent({
         provider,
         tools: allTools,
-        systemInstruction: `You are a coding assistant.\nAlways respond in the users language.\nAlways use tools proactively.\nWhen reading/listing files do NOT use bash commands. USE YOUR TOOLS.`
+        systemInstruction: `You are a coding assistant.\nAlways respond in the users language.\nAlways use tools proactively.\nWhen reading/listing files do NOT use bash commands. USE YOUR TOOLS.`,
+        onConfirm: async (tc) => {
+          if (yoloModeRef.current) return true;
+          return new Promise<boolean>((resolve) => {
+            setPendingConfirm({ ...tc, resolve });
+          });
+        }
       });
 
       const newMessages = [...messages, provider.createUserMessage(sendUserText)];
@@ -426,8 +466,18 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         return null;
       })}
 
-      {isStreaming && blocks.length > 0 && blocks[blocks.length - 1].type === 'user' && (
+      {isStreaming && blocks.length > 0 && blocks[blocks.length - 1].type === 'user' && !pendingConfirm && (
         <Box marginLeft={2}><Text color="yellow"><Spinner type="dots" /> Thinking...</Text></Box>
+      )}
+
+      {pendingConfirm && (
+        <Box marginTop={1} marginLeft={2} flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
+          <Text color="yellow" bold>⚠ Agent wants to execute: {pendingConfirm.name}</Text>
+          <Text dimColor>{JSON.stringify(pendingConfirm.input)}</Text>
+          <Box marginTop={1}>
+            <Text>Allow execution? <Text color="green" bold>[Y/Enter] Yes</Text> <Text color="red" bold>[N/Esc] No</Text></Text>
+          </Box>
+        </Box>
       )}
 
       {!isStreaming && query.startsWith('/') && !isSelectingModel && !isSelectingSession && (
@@ -485,7 +535,9 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
 
       <Box marginTop={1} flexDirection="row" justifyContent="space-between">
         {exitPrompted ? <Text color="red" bold>Press Ctrl+C again to exit.</Text> : <Text dimColor>Ctrl+C - Exit {isStreaming ? '| Esc - Stop' : ''}</Text>}
-        <Text dimColor>Ctrl+O - Toggle verbosity</Text>
+        <Text dimColor>
+          Ctrl+O - Toggle verbosity | Shift+Tab - YOLO {yoloMode ? <Text color="red" bold>ON</Text> : 'OFF'}
+        </Text>
       </Box>
 
       <Box flexDirection="row" justifyContent="space-between">
