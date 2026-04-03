@@ -1,0 +1,41 @@
+import type { ReactNode } from 'react';
+
+export interface ToolCallInfo {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  status: 'calling' | 'done';
+  result?: unknown;
+}
+
+export type MessageBlock =
+  | { type: 'user'; text: string }
+  | { type: 'assistant'; text: string }
+  | { type: 'error'; text: string }
+  | { type: 'tool'; calls: ToolCallInfo[] };
+
+export interface StreamPart {
+  type: 'text-delta' | 'tool-call' | 'tool-result' | 'finish-step';
+  text?: string;
+  toolCallId?: string;
+  toolName?: string;
+  input?: unknown;
+  output?: unknown;
+  reason?: string;
+}
+
+export interface ToolDefinition {
+  description: string;
+  parameters: any;
+  execute: (args: any) => Promise<unknown>;
+}
+
+export type ToolSet = Record<string, ToolDefinition>;
+
+export interface AgentProvider {
+  name: string;
+  setModel(model: string): void;
+  stream(args: { systemInstruction?: string; messages: any[]; tools?: ToolSet }): AsyncGenerator<StreamPart, void, unknown>;
+  createUserMessage(content: string): any;
+  createToolResultMessage(id: string, name: string, output: unknown): any;
+}

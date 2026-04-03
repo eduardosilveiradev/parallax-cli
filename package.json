@@ -1,64 +1,33 @@
 {
-	"name": "parallax-cli",
-	"version": "1.0.0",
-	"description": "An agentic software development assistant",
-	"main": "dist/index.js",
-	"exports": {
-		".": "./dist/index.js",
-		"./*.js": "./*.ts",
-		"./*": "./*"
-	},
-	"bin": {
-		"parallax": "dist/index.js",
-		"parallax.cmd": "dist/index.js"
-	},
-	"scripts": {
-		"dev": "tsx --watch --env-file=.env index.tsx",
-		"serve": "tsx --watch --env-file=.env --env-file=.env.local server.ts",
-		"build": "tsc",
-		"start": "node dist/index.js",
-		"start:server": "node dist/server.js",
-		"postinstall": "pnpm build"
-	},
-	"repository": {
-		"type": "git",
-		"url": "git+https://github.com/eduardosilveiradev/parallax-cli.git"
-	},
-	"keywords": [],
-	"author": "",
-	"license": "ISC",
-	"type": "module",
-	"bugs": {
-		"url": "https://github.com/eduardosilveiradev/parallax-cli/issues"
-	},
-	"homepage": "https://github.com/eduardosilveiradev/parallax-cli#readme",
-	"dependencies": {
-		"@better-auth/infra": "^0.1.8",
-		"@modelcontextprotocol/sdk": "^1.27.1",
-		"@modelcontextprotocol/server-filesystem": "^2026.1.14",
-		"@neondatabase/serverless": "^1.0.2",
-		"@types/yargs": "^17.0.35",
-		"@vercel/sandbox": "^1.8.1",
-		"better-auth": "^1.5.4",
-		"chalk": "^5.6.2",
-		"cors": "^2.8.6",
-		"diff": "^8.0.3",
-		"express": "^5.2.1",
-		"ink": "^6.8.0",
-		"marked": "^15.0.12",
-		"marked-terminal": "^7.3.0",
-		"nanoid": "^5.1.6",
-		"react": "^19.2.4",
-		"yargs": "^18.0.0"
-	},
-	"devDependencies": {
-		"@tsconfig/node-lts": "^24.0.0",
-		"@types/cors": "^2.8.19",
-		"@types/express": "^5.0.6",
-		"@types/node": "^25.3.3",
-		"@types/react": "^19.2.14",
-		"ts-node": "^10.9.2",
-		"tsx": "^4.21.0",
-		"typescript": "^5.9.3"
-	}
+  "name": "parallax-cli",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": {
+    "parallax": "./bin/parallax.js"
+  },
+  "scripts": {
+    "start": "NODE_OPTIONS='--no-warnings=DEP0040' tsx src/index.tsx",
+    "dev": "NODE_OPTIONS='--no-warnings=DEP0040' tsx watch src/index.tsx"
+  },
+  "dependencies": {
+    "@google/gemini-cli-core": "^0.36.0",
+    "@google/genai": "^1.48.0",
+    "ai": "^6.0.145",
+    "ai-sdk-provider-gemini-cli": "^2.0.1",
+    "ink": "^6.8.0",
+    "ink-spinner": "^5.0.0",
+    "ink-text-input": "^6.0.0",
+    "marked": "^14.0.0",
+    "marked-terminal": "^7.3.0",
+    "react": "^19.2.4",
+    "zod": "^4.3.6",
+    "zod-to-json-schema": "^3.25.2"
+  },
+  "devDependencies": {
+    "@types/marked-terminal": "^6.1.1",
+    "@types/node": "^25.5.2",
+    "@types/react": "^19.2.14",
+    "tsx": "^4.21.0",
+    "typescript": "^5.6.3"
+  }
 }
