@@ -65,6 +65,41 @@ export const allTools: ToolSet = {
       }
     }
   },
+  editFile: {
+    description: 'Edit an existing file by replacing a specific block of text. You must provide the exact old text to be replaced and the new text.',
+    requiresConfirmation: true,
+    parameters: {
+      type: 'object',
+      properties: { 
+        path: { type: 'string', description: 'Path to the file to edit' },
+        oldText: { type: 'string', description: 'The exact string to find and replace. Must match perfectly, including indentation.' },
+        newText: { type: 'string', description: 'The string to replace oldText with.' }
+      },
+      required: ['path', 'oldText', 'newText']
+    },
+    execute: async (args: any) => {
+      try {
+        const fullPath = path.resolve(args.path);
+        if (!fs.existsSync(fullPath)) {
+            return { success: false, error: 'File does not exist: ' + fullPath };
+        }
+        const content = fs.readFileSync(fullPath, 'utf8');
+        
+        const occurrences = content.split(args.oldText).length - 1;
+        if (occurrences === 0) {
+            return { success: false, error: 'The provided oldText was not found in the file. Make sure to match whitespace perfectly.' };
+        } else if (occurrences > 1) {
+            return { success: false, error: 'The provided oldText was found multiple times in the file. Provide a larger block of text to uniquely match.' };
+        }
+        
+        const newContent = content.replace(args.oldText, args.newText);
+        fs.writeFileSync(fullPath, newContent);
+        return { success: true, path: fullPath, message: 'File successfully edited.' };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    }
+  },
   runCommand: {
     description: 'Run a shell command',
     requiresConfirmation: true,

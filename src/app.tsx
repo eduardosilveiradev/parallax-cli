@@ -1,6 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { Box, Text, useInput, useApp } from 'ink';
-import TextInput from 'ink-text-input';
 import Spinner from 'ink-spinner';
 import * as marked from 'marked';
 import TerminalRenderer from 'marked-terminal';
@@ -12,7 +11,8 @@ import os from 'os';
 import { ToolLoopAgent } from './agent/agent.js';
 import { GeminiProvider } from './agent/gemini-provider.js';
 import { allTools } from './tools.js';
-import type { MessageBlock, ToolCallInfo } from './agent/types.js';
+import { loadMcpTools } from './mcp.js';
+import type { MessageBlock, ToolCallInfo, ToolSet } from './agent/types.js';
 import { VALID_GEMINI_MODELS } from '@google/gemini-cli-core';
 
 
@@ -20,6 +20,33 @@ import { VALID_GEMINI_MODELS } from '@google/gemini-cli-core';
 marked.setOptions({ renderer: new TerminalRenderer() as any });
 
 const MODEL = 'gemini-3-flash-preview';
+
+function getToolLabel(name: string, args: any, status: 'calling' | 'done'): string {
+  const isDone = status === 'done';
+  const fileName = args?.path ? path.basename(args.path) : '';
+
+  switch (name) {
+    case 'listDirectory':
+      return isDone ? `Listed ${args.path}` : `Listing ${args.path}`;
+    case 'readFile':
+      return isDone ? `Read ${fileName}` : `Reading ${fileName}`;
+    case 'writeFile':
+      return isDone ? `Wrote ${fileName}` : `Writing ${fileName}`;
+    case 'editFile':
+      return isDone ? `Edited ${fileName}` : `Editing ${fileName}`;
+    case 'runCommand':
+      return isDone ? `Ran ${args.command}` : `Running ${args.command}`;
+    case 'subagent':
+      return isDone ? `Subagent finished` : `Spawning subagent`;
+    default:
+      if (name.includes('_')) {
+        const [server, ...tool] = name.split('_');
+        const toolName = tool.join('_');
+        return isDone ? `${server}: Finished ${toolName}` : `${server}: Calling ${toolName}`;
+      }
+      return isDone ? `Finished ${name}` : `Calling ${name}`;
+  }
+}
 
 const AVAILABLE_COMMANDS = [
   { cmd: '/model', desc: 'Change the current model (e.g. /model gemini-1.5-pro)' },
@@ -74,6 +101,52 @@ function ListPicker({ items, label, onSelect, onCancel }: { items: { id: string;
   );
 }
 
+function SafeTextInput({ value, onChange, onSubmit }: { value: string, onChange: (v: string) => void, onSubmit: (v: string) => void }) {
+  const [cursor, setCursor] = useState(value.length);
+  
+  useEffect(() => {
+    if (cursor > value.length) setCursor(value.length);
+  }, [value, cursor]);
+
+  useInput((input, key) => {
+    if (key.upArrow || key.downArrow || key.tab || (key.shift && key.tab)) return;
+    if (key.ctrl || key.meta || key.escape) return;
+    if (key.return) {
+      onSubmit(value);
+      return;
+    }
+
+    if (key.leftArrow) {
+      setCursor(c => Math.max(0, c - 1));
+    } else if (key.rightArrow) {
+      setCursor(c => Math.min(value.length, c + 1));
+    } else if (key.backspace || key.delete) {
+      if (cursor > 0) {
+        onChange(value.slice(0, cursor - 1) + value.slice(cursor));
+        setCursor(c => c - 1);
+      }
+    } else if (input.length > 0) {
+      const sanitized = input.replace(/[\x00-\x1F\x7F-\x9F]/g, '');
+      if (sanitized.length > 0) {
+        onChange(value.slice(0, cursor) + sanitized + value.slice(cursor));
+        setCursor(c => c + sanitized.length);
+      }
+    }
+  });
+
+  const before = value.slice(0, cursor);
+  const at = cursor < value.length ? value[cursor] : ' ';
+  const after = cursor < value.length ? value.slice(cursor + 1) : '';
+
+  return (
+    <Text>
+      {before}
+      <Text inverse>{at}</Text>
+      {after}
+    </Text>
+  );
+}
+
 export default function App({ initialPrompt }: { initialPrompt?: string } = {}) {
   const { exit } = useApp();
   const [sessionId, setSessionId] = useState(() => crypto.randomBytes(4).toString('hex'));
@@ -91,12 +164,18 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
   const [availableSessions, setAvailableSessions] = useState<{ id: string; label: string; detail?: string }[]>([]);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
   const [commandIndex, setCommandIndex] = useState(0);
-  const suppressInputHandling = useRef(false);
   const hasInitialized = useRef(false);
   const [yoloMode, setYoloMode] = useState(false);
   const yoloModeRef = useRef(yoloMode);
   useEffect(() => { yoloModeRef.current = yoloMode; }, [yoloMode]);
   const [pendingConfirm, setPendingConfirm] = useState<{ id: string; name: string; input: any; resolve: (b: boolean) => void } | null>(null);
+  const [combinedTools, setCombinedTools] = useState<ToolSet>(allTools);
+
+  useEffect(() => {
+    loadMcpTools().then(mcpTools => {
+      setCombinedTools(prev => ({ ...prev, ...mcpTools }));
+    });
+  }, []);
 
   useEffect(() => { setCommandIndex(0); }, [query]);
 
@@ -193,13 +272,9 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       }
     }
 
-    if (key.ctrl && typeof input === 'string') {
-      suppressInputHandling.current = true;
-      setTimeout(() => { suppressInputHandling.current = false; }, 50);
-    }
-
-    if (key.ctrl && input === 'o') {
-      setToolsExpanded(!toolsExpanded);
+    if (key.ctrl && (input === 'o' || input === '\x0f')) {
+      setToolsExpanded(v => !v);
+      return;
     } else if (key.ctrl && input === 'c') {
       if (isStreaming && abortController) {
         abortController.abort();
@@ -270,7 +345,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
           setTimeout(async () => {
             let fullText = '';
             try {
-              const compactAgent = new ToolLoopAgent({ provider, tools: allTools, systemInstruction: "You are a coding assistant." });
+              const compactAgent = new ToolLoopAgent({ provider, tools: combinedTools, systemInstruction: "You are a coding assistant." });
               const stream = compactAgent.stream(newMessages);
               for await (const part of stream) {
                 if (part.type === 'text-delta') {
@@ -355,7 +430,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       const provider = new GeminiProvider(currentModel);
       const agent = new ToolLoopAgent({
         provider,
-        tools: allTools,
+        tools: combinedTools,
         systemInstruction: `You are a coding assistant.\nAlways respond in the users language.\nAlways use tools proactively.\nWhen reading/listing files do NOT use bash commands. USE YOUR TOOLS.\nYou are in a terminal environment, not a GUI, this means you should avoid markdown at all costs.`,
         onConfirm: async (tc) => {
           if (yoloModeRef.current) return true;
@@ -442,7 +517,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         setAbortController(null);
       }
     },
-    [messages, isStreaming, currentModel, commandIndex]
+    [messages, isStreaming, currentModel, commandIndex, combinedTools]
   );
 
   useEffect(() => {
@@ -476,12 +551,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
                 <Box key={tc.id} flexDirection="column" marginLeft={2}>
                   <Box>
                     {tc.status === 'calling' ? <Text color="yellow"><Spinner type="dots" /> </Text> : <Text color="green">✔ </Text>}
-                    <Text color="cyan">{tc.name}</Text>
-                    {tc.args && Object.keys(tc.args).length > 0 && (
-                      <Text dimColor>
-                        {' '}{JSON.stringify(tc.args).length > 200 ? JSON.stringify(tc.args).slice(0, 200) + '...' : JSON.stringify(tc.args)}
-                      </Text>
-                    )}
+                    <Text color="cyan">{getToolLabel(tc.name, tc.args, tc.status as any)}</Text>
                   </Box>
                   {tc.status === 'done' && tc.result !== undefined && (
                     <Box marginLeft={4}><Text dimColor wrap="truncate-end">→ {JSON.stringify(tc.result).slice(0, 100)}</Text></Box>
@@ -500,7 +570,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
 
       {pendingConfirm && (
         <Box marginTop={1} marginLeft={2} flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
-          <Text color="yellow" bold>⚠ Agent wants to execute: {pendingConfirm.name}</Text>
+          <Text color="yellow" bold>⚠ Agent wants to execute: {getToolLabel(pendingConfirm.name, pendingConfirm.input, 'calling')}</Text>
           <Text dimColor>{JSON.stringify(pendingConfirm.input)}</Text>
           <Box marginTop={1}>
             <Text>Allow execution? <Text color="green" bold>[Y/Enter] Yes</Text> <Text color="red" bold>[N/Esc] No</Text></Text>
@@ -547,15 +617,9 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       {!isStreaming && !isSelectingModel && !isSelectingSession && (
         <Box marginTop={1}>
           <Text color="cyan" bold>❯ </Text>
-          <TextInput
+          <SafeTextInput
             value={query}
-            onChange={(val) => {
-              if (suppressInputHandling.current) {
-                // DON'T set suppressInputHandling.current = false here anymore
-                return;
-              }
-              setQuery(val);
-            }}
+            onChange={setQuery}
             onSubmit={handleSubmit}
           />
         </Box>

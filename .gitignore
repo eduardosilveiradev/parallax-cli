@@ -7,3 +7,5 @@ dist
 .parallax-sandbox
 
 better-auth_migrations
+
+.npmrc
