@@ -9,13 +9,15 @@ export interface ToolCallInfo {
 }
 
 export type MessageBlock =
-  | { type: 'user'; text: string }
-  | { type: 'assistant'; text: string }
-  | { type: 'error'; text: string }
-  | { type: 'tool'; calls: ToolCallInfo[] };
+  | { type: 'user'; id: string; text: string }
+  | { type: 'assistant'; id: string; text: string }
+  | { type: 'error'; id: string; text: string }
+  | { type: 'thinking'; id: string; text: string }
+  | { type: 'tool-call'; id: string; call: ToolCallInfo }
+  | { type: 'tool'; id?: string; calls: ToolCallInfo[] }; // Legacy loaded sessions
 
 export interface StreamPart {
-  type: 'text-delta' | 'tool-call' | 'tool-result' | 'finish-step';
+  type: 'text-delta' | 'thinking-delta' | 'tool-call' | 'tool-result' | 'finish-step';
   text?: string;
   toolCallId?: string;
   toolName?: string;

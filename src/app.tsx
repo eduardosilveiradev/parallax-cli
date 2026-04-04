@@ -10,12 +10,12 @@ import os from 'os';
 
 import { ToolLoopAgent } from './agent/agent.js';
 import { GeminiProvider } from './agent/gemini-provider.js';
-import { allTools } from './tools.js';
+import { allTools, activeCommands } from './tools.js';
 import { loadMcpTools } from './mcp.js';
 import type { MessageBlock, ToolCallInfo, ToolSet } from './agent/types.js';
 import { VALID_GEMINI_MODELS } from '@google/gemini-cli-core';
 
-
+type AppMode = 'agent' | 'plan' | 'debug';
 
 marked.setOptions({ renderer: new TerminalRenderer() as any });
 
@@ -38,6 +38,8 @@ function getToolLabel(name: string, args: any, status: 'calling' | 'done'): stri
       return isDone ? `Ran ${args.command}` : `Running ${args.command}`;
     case 'subagent':
       return isDone ? `Subagent finished` : `Spawning subagent`;
+    case 'checkCommandStatus':
+      return isDone ? `Checked command ${args.commandId}` : `Checking command ${args.commandId}`;
     default:
       if (name.includes('_')) {
         const [server, ...tool] = name.split('_');
@@ -103,7 +105,7 @@ function ListPicker({ items, label, onSelect, onCancel }: { items: { id: string;
 
 function SafeTextInput({ value, onChange, onSubmit }: { value: string, onChange: (v: string) => void, onSubmit: (v: string) => void }) {
   const [cursor, setCursor] = useState(value.length);
-  
+
   useEffect(() => {
     if (cursor > value.length) setCursor(value.length);
   }, [value, cursor]);
@@ -151,8 +153,8 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
   const { exit } = useApp();
   const [sessionId, setSessionId] = useState(() => crypto.randomBytes(4).toString('hex'));
   const HISTORY_FILE = path.join(os.homedir(), '.parallax', `${sessionId}.json`);
-
   const [currentModel, setCurrentModel] = useState(MODEL);
+  const [mode, setMode] = useState<AppMode>('agent');
   const [query, setQuery] = useState('');
   const [blocks, setBlocks] = useState<MessageBlock[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
@@ -185,12 +187,37 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       if (fs.existsSync(file)) {
         const data = JSON.parse(fs.readFileSync(file, 'utf8'));
         setSessionId(id);
-        setBlocks(data.blocks || []);
+        
+        let loadedBlocks = data.blocks || [];
+        
+        // Correct legacy ordering: older versions of Parallax mistakenly placed grouped
+        // 'tool' blocks before the 'assistant' blocks in the JSON.
+        for (let i = 0; i < loadedBlocks.length - 1; i++) {
+          if (loadedBlocks[i].type === 'tool' && loadedBlocks[i+1].type === 'assistant') {
+             const temp = loadedBlocks[i];
+             loadedBlocks[i] = loadedBlocks[i+1];
+             loadedBlocks[i+1] = temp;
+             i++; // Skip the next index since we just swapped it
+          }
+        }
+
+        let flattenedBlocks: MessageBlock[] = [];
+        for (const b of loadedBlocks) {
+          if (b.type === 'tool') {
+            for (const tc of b.calls) {
+              flattenedBlocks.push({ type: 'tool-call', id: tc.id || crypto.randomUUID(), call: tc });
+            }
+          } else {
+            flattenedBlocks.push({ ...b, id: b.id || crypto.randomUUID() });
+          }
+        }
+        
+        setBlocks(flattenedBlocks);
         setMessages(data.messages || []);
       }
       setIsSelectingSession(false);
     } catch (err: any) {
-      setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', text: `Failed to load: ${err.message}` }]);
+      setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: crypto.randomUUID(), text: `Failed to load: ${err.message}` }]);
       setIsSelectingSession(false);
     }
   };
@@ -249,6 +276,18 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         console.log(`Session ID: ${sessionId}`);
         console.log(`Last message: "${lastMsg}"`);
         console.log(`\n`);
+
+        let killedCount = 0;
+        for (const [id, cmd] of activeCommands.entries()) {
+          try {
+            cmd.process.kill();
+            killedCount++;
+          } catch (e) { }
+        }
+        if (killedCount > 0) {
+          console.log(`Forcefully terminated ${killedCount} background process(es).`);
+        }
+
         process.exit(0);
       } else {
         setExitPrompted(false);
@@ -256,18 +295,25 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       return;
     }
 
-    if (!isStreaming && !isSelectingModel && !isSelectingSession && query.startsWith('/')) {
-      const filtered = AVAILABLE_COMMANDS.filter(c => c.cmd.startsWith(query.toLowerCase().split(' ')[0]));
-      if (key.upArrow) {
-        setCommandIndex((i: number) => Math.max(0, i - 1));
-        return;
+    if (!isStreaming && !isSelectingModel && !isSelectingSession) {
+      if (query.startsWith('/')) {
+        const filtered = AVAILABLE_COMMANDS.filter(c => c.cmd.startsWith(query.toLowerCase().split(' ')[0]));
+        if (key.upArrow) {
+          setCommandIndex((i: number) => Math.max(0, i - 1));
+          return;
+        }
+        if (key.downArrow) {
+          setCommandIndex((i: number) => Math.min(filtered.length - 1, i + 1));
+          return;
+        }
+        if (key.tab && filtered.length > 0) {
+          setQuery(filtered[commandIndex].cmd + ' ');
+          return;
+        }
       }
-      if (key.downArrow) {
-        setCommandIndex((i: number) => Math.min(filtered.length - 1, i + 1));
-        return;
-      }
-      if (key.tab && filtered.length > 0) {
-        setQuery(filtered[commandIndex].cmd + ' ');
+
+      if (key.tab) {
+        setMode(prev => prev === 'agent' ? 'plan' : prev === 'plan' ? 'debug' : 'agent');
         return;
       }
     }
@@ -316,7 +362,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         if (command === '/model') {
           if (args[0]) {
             setCurrentModel(args[0]);
-            setBlocks((prev: MessageBlock[]) => [...prev, { type: 'assistant', text: `Model changed to ${args[0]}` }]);
+            setBlocks((prev: MessageBlock[]) => [...prev, { type: 'assistant', id: crypto.randomUUID(), text: `Model changed to ${args[0]}` }]);
           } else {
             setIsSelectingModel(true);
           }
@@ -324,7 +370,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         } else if (command === '/new') {
           const freshId = crypto.randomBytes(4).toString('hex');
           setSessionId(freshId);
-          setBlocks([{ type: 'assistant', text: `Created new session: ${freshId}` }]);
+          setBlocks([{ type: 'assistant', id: crypto.randomUUID(), text: `Created new session: ${freshId}` }]);
           setMessages([]);
           return;
         } else if (command === '/init') {
@@ -335,7 +381,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
           sendUserText = "CRITICAL INSTRUCTION: Analyze the changes made in this session. Generate a commit message for the current changes. Afterwards commit with that message and push to origin.";
         } else if (command === '/compact') {
           const prompt = "CRITICAL INSTRUCTION: Provide an in-depth, highly comprehensive summary of our ENTIRE conversation history up to this point. Include all relevant technical context, code paths, goals, and decisions. This summary will be used to replace our entire context window to save tokens, so ensure no critical information is lost.";
-          setBlocks((prev: MessageBlock[]) => [...prev, { type: 'user', text: '/compact' }, { type: 'assistant', text: '' }]);
+          setBlocks((prev: MessageBlock[]) => [...prev, { type: 'user', id: crypto.randomUUID(), text: '/compact' }, { type: 'assistant', id: crypto.randomUUID(), text: '' }]);
 
           const provider = new GeminiProvider(currentModel);
           const newMessages = [...messages, provider.createUserMessage(prompt)];
@@ -360,13 +406,13 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
               }
 
               // Done! Nuke the context
-              setBlocks([{ type: 'assistant', text: `*[History Compacted]*\n\n${fullText}` }]);
+              setBlocks([{ type: 'assistant', id: crypto.randomUUID(), text: `*[History Compacted]*\n\n${fullText}` }]);
               setMessages([
                 provider.createUserMessage("Here is the comprehensive summary of our previous conversation up to this point:\n\n" + fullText),
                 { role: 'model', parts: [{ text: "Understood. I have fully internalized this historical context and am ready to proceed with your next instructions." }] } as any
               ]);
             } catch (err: any) {
-              setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', text: `Compact failed: ${err.message}` }]);
+              setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: crypto.randomUUID(), text: `Compact failed: ${err.message}` }]);
             } finally {
               setIsStreaming(false);
             }
@@ -417,21 +463,29 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
           return;
         } else if (command === '/help') {
           const helpText = AVAILABLE_COMMANDS.map(c => `**${c.cmd}** - ${c.desc}`).join('\n');
-          setBlocks((prev: MessageBlock[]) => [...prev, { type: 'assistant', text: helpText }]);
+          setBlocks((prev: MessageBlock[]) => [...prev, { type: 'assistant', id: crypto.randomUUID(), text: helpText }]);
           return;
         } else {
-          setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', text: `Unknown command: ${command}` }]);
+          setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: crypto.randomUUID(), text: `Unknown command: ${command}` }]);
           return;
         }
       }
 
-      setBlocks((prev: MessageBlock[]) => [...prev, { type: 'user', text: displayUserText }]);
+      setBlocks((prev: MessageBlock[]) => [...prev, { type: 'user', id: crypto.randomUUID(), text: displayUserText }]);
 
       const provider = new GeminiProvider(currentModel);
+
+      let sysInstruct = `You are a coding assistant.\nAlways respond in the users language.\nAlways use tools proactively.\nWhen reading/listing files do NOT use bash commands. USE YOUR TOOLS.\nYou are in a terminal environment, not a GUI, this means you should avoid markdown at all costs.`;
+      if (mode === 'plan') {
+        sysInstruct = `You are a planner. Before writing any code or taking actions, write a comprehensive plan.\n${sysInstruct}`;
+      } else if (mode === 'debug') {
+        sysInstruct = `You are a debugging assistant. Focus on finding bugs, reasoning about the state, and adding logs.\n${sysInstruct}`;
+      }
+
       const agent = new ToolLoopAgent({
         provider,
         tools: combinedTools,
-        systemInstruction: `You are a coding assistant.\nAlways respond in the users language.\nAlways use tools proactively.\nWhen reading/listing files do NOT use bash commands. USE YOUR TOOLS.\nYou are in a terminal environment, not a GUI, this means you should avoid markdown at all costs.`,
+        systemInstruction: sysInstruct,
         onConfirm: async (tc) => {
           if (yoloModeRef.current) return true;
           return new Promise<boolean>((resolve) => {
@@ -447,77 +501,77 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       setAbortController(ac);
 
       let fullText = '';
-      const toolCalls: ToolCallInfo[] = [];
+      let thinkingText = '';
+      let thinkingBlockIndex = -1;
       let assistantBlockIndex = -1;
-      let toolBlockIndex = -1;
 
       try {
         const stream = agent.stream(newMessages);
         for await (const part of stream) {
           if (ac.signal.aborted) break;
 
-          if (part.type === 'text-delta') {
+          if (part.type === 'thinking-delta') {
+            thinkingText += part.text;
+            const currentThinking = thinkingText;
+            setBlocks((prev) => {
+              let updated = [...prev];
+              if (thinkingBlockIndex === -1) {
+                thinkingBlockIndex = updated.length;
+                updated.push({ type: 'thinking', id: crypto.randomUUID(), text: currentThinking });
+              } else {
+                (updated[thinkingBlockIndex] as any).text = currentThinking;
+              }
+              return updated;
+            });
+          } else if (part.type === 'text-delta') {
             fullText += part.text;
             const currentText = fullText;
             setBlocks((prev) => {
               let updated = [...prev];
               if (assistantBlockIndex === -1) {
                 assistantBlockIndex = updated.length;
-                updated.push({ type: 'assistant', text: currentText });
+                updated.push({ type: 'assistant', id: crypto.randomUUID(), text: currentText });
               } else {
-                updated[assistantBlockIndex] = { type: 'assistant', text: currentText };
+                (updated[assistantBlockIndex] as any).text = currentText;
               }
               return updated;
             });
           } else if (part.type === 'tool-call') {
             const tc: ToolCallInfo = {
-              id: part.toolCallId || '',
+              id: part.toolCallId || crypto.randomUUID(),
               name: part.toolName || '',
               args: part.input as Record<string, unknown>,
               status: 'calling',
             };
-            toolCalls.push(tc);
-
-            setBlocks((prev) => {
-              let updated = [...prev];
-              if (toolBlockIndex === -1) {
-                if (assistantBlockIndex !== -1) {
-                  toolBlockIndex = assistantBlockIndex;
-                  assistantBlockIndex++;
-                  updated.splice(toolBlockIndex, 0, { type: 'tool', calls: [...toolCalls] });
-                } else {
-                  toolBlockIndex = updated.length;
-                  updated.push({ type: 'tool', calls: [...toolCalls] });
+            setBlocks((prev) => [...prev, { type: 'tool-call', id: tc.id, call: tc }]);
+          } else if (part.type === 'tool-result') {
+            setBlocks((prev: MessageBlock[]) => {
+              const updated = [...prev];
+              for (let i = updated.length - 1; i >= 0; i--) {
+                const b = updated[i];
+                if (b.type === 'tool-call' && b.call.id === part.toolCallId) {
+                  updated[i] = { type: 'tool-call', id: b.id, call: { ...b.call, status: 'done', result: part.output } };
+                  break;
                 }
-              } else {
-                updated[toolBlockIndex] = { type: 'tool', calls: [...toolCalls] };
               }
               return updated;
             });
-          } else if (part.type === 'tool-result') {
-            const existing = toolCalls.find((t) => t.id === part.toolCallId);
-            if (existing) {
-              existing.status = 'done';
-              existing.result = part.output;
-              setBlocks((prev: MessageBlock[]) => {
-                let updated = [...prev];
-                if (toolBlockIndex !== -1) {
-                  updated[toolBlockIndex] = { type: 'tool', calls: [...toolCalls] };
-                }
-                return updated;
-              });
-            }
+          } else if (part.type === 'finish-step') {
+            fullText = '';
+            thinkingText = '';
+            thinkingBlockIndex = -1;
+            assistantBlockIndex = -1;
           }
         }
         if (!ac.signal.aborted) setMessages([...newMessages]);
       } catch (err: any) {
-        setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', text: err?.message || String(err) }]);
+        setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: crypto.randomUUID(), text: err?.message || String(err) }]);
       } finally {
         setIsStreaming(false);
         setAbortController(null);
       }
     },
-    [messages, isStreaming, currentModel, commandIndex, combinedTools]
+    [messages, isStreaming, currentModel, commandIndex, combinedTools, mode]
   );
 
   useEffect(() => {
@@ -537,27 +591,32 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       </Box>
 
       {blocks.map((block: MessageBlock, i: number) => {
-        if (block.type === 'user') return <Box key={i}><Text color="green" bold>❯ </Text><Text>{block.text}</Text></Box>;
-        if (block.type === 'error') return <Box key={i}><Text color="red">✖ Error: {block.text}</Text></Box>;
-        if (block.type === 'assistant') {
-          return <Box key={i} marginLeft={2}><Text>{(marked.parse(block.text) as string).trim() || block.text}</Text></Box>;
-        }
-        if (block.type === 'tool') {
-          if (!toolsExpanded && !isStreaming) return <Box key={i} marginLeft={2}><Text dimColor>▶ {block.calls.length} tools (Ctrl+O to expand)</Text></Box>;
+        const key = block.id || i;
+        if (block.type === 'user') return <Box key={key}><Text color="green" bold>❯ </Text><Text>{block.text}</Text></Box>;
+        if (block.type === 'error') return <Box key={key}><Text color="red">✖ Error: {block.text}</Text></Box>;
+        if (block.type === 'thinking') {
+          if (!toolsExpanded) return null;
           return (
-            <Box key={i} marginLeft={2} flexDirection="column">
-              <Text dimColor>▼ {block.calls.length} tools</Text>
-              {block.calls.map((tc: ToolCallInfo) => (
-                <Box key={tc.id} flexDirection="column" marginLeft={2}>
-                  <Box>
-                    {tc.status === 'calling' ? <Text color="yellow"><Spinner type="dots" /> </Text> : <Text color="green">✔ </Text>}
-                    <Text color="cyan">{getToolLabel(tc.name, tc.args, tc.status as any)}</Text>
-                  </Box>
-                  {tc.status === 'done' && tc.result !== undefined && (
-                    <Box marginLeft={4}><Text dimColor wrap="truncate-end">→ {JSON.stringify(tc.result).slice(0, 100)}</Text></Box>
-                  )}
-                </Box>
-              ))}
+            <Box key={key} marginLeft={2} flexDirection="column">
+              <Text color="magenta" dimColor>💭 Thinking</Text>
+              <Box marginLeft={2}><Text dimColor>{block.text}</Text></Box>
+            </Box>
+          );
+        }
+        if (block.type === 'assistant') {
+          return <Box key={key} marginLeft={2}><Text>{(marked.parse(block.text) as string).trim() || block.text}</Text></Box>;
+        }
+        if (block.type === 'tool-call') {
+          const tc = block.call;
+          return (
+            <Box key={key} marginLeft={2} flexDirection="row">
+              {tc.status === 'calling'
+                ? <Text color="yellow"><Spinner type="dots" /> </Text>
+                : <Text color="green">✔ </Text>}
+              <Text color="cyan">{getToolLabel(tc.name, tc.args, tc.status as any)}</Text>
+              {tc.status === 'done' && tc.result !== undefined && toolsExpanded && (
+                <Box marginLeft={2}><Text dimColor wrap="truncate-end">→ {JSON.stringify(tc.result).slice(0, 100)}</Text></Box>
+              )}
             </Box>
           );
         }
@@ -626,15 +685,17 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       )}
 
       <Box marginTop={1} flexDirection="row" justifyContent="space-between">
-        {exitPrompted ? <Text color="red" bold>Press Ctrl+C again to exit.</Text> : <Text dimColor>Ctrl+C - Exit {isStreaming ? '| Esc - Stop' : ''}</Text>}
+        {exitPrompted ? <Text color="red" bold>Press Ctrl+C again to exit.</Text> : <Text dimColor>Ctrl+C - Exit {isStreaming ? '| Esc - Stop' : '| Tab - Cycle Mode'}</Text>}
         <Text dimColor>
-          Ctrl+O - Toggle verbosity | Shift+Tab - YOLO {yoloMode ? <Text color="red" bold>ON</Text> : 'OFF'}
+          Ctrl+O - Reasoning {toolsExpanded ? <Text color="magenta" bold>ON</Text> : 'OFF'} | Shift+Tab - YOLO {yoloMode ? <Text color="red" bold>ON</Text> : 'OFF'}
         </Text>
       </Box>
 
       <Box flexDirection="row" justifyContent="space-between">
         <Box flexDirection="row">
-          <Text dimColor>Model: {currentModel}</Text>
+          <Text dimColor>Mode: </Text>
+          <Text color={mode === 'agent' ? 'blue' : mode === 'plan' ? 'green' : 'yellow'} bold>{mode.toUpperCase()}</Text>
+          <Text dimColor> | Model: {currentModel}</Text>
         </Box>
         <Text dimColor>
           Context: {messages.length} msgs (~{Math.floor(blocks.reduce((acc: number, b: any) => acc + (b.text?.length || 0), 0) / 4 + messages.reduce((acc: number, m: any) => acc + JSON.stringify(m).length, 0) / 4).toLocaleString()} tokens)

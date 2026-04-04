@@ -215,7 +215,9 @@ export class GeminiProvider implements AgentProvider {
       if (!candidate || !candidate.content || !candidate.content.parts) continue;
       
       for (const part of candidate.content.parts) {
-        if (part.text !== undefined) {
+        if (part.thought === true && part.text !== undefined) {
+          yield { type: 'thinking-delta', text: part.text };
+        } else if (part.text !== undefined) {
           yield { type: 'text-delta', text: part.text };
           if (finalParts.length > 0 && finalParts[finalParts.length - 1].text !== undefined) {
              finalParts[finalParts.length - 1].text += part.text;
