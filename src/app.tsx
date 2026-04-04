@@ -289,6 +289,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
                   let detail = '';
                   try {
                     const filePath = path.join(dir, f);
+                    const stat = fs.statSync(filePath);
                     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
                     if (!data.messages || data.messages.length === 0) {
                       try { fs.unlinkSync(filePath); } catch {} // Cleanup empty sessions
@@ -303,13 +304,17 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
                         break;
                       }
                     }
-                    return { id, label: id, detail };
+                    const dateStr = new Date(stat.mtimeMs).toLocaleString();
+                    return { id, label: `${id}  [${dateStr}]`, detail, mtimeMs: stat.mtimeMs };
                   } catch {
                     return null;
                   }
-                }).filter(Boolean) as { id: string; label: string; detail: string }[];
-                if (items.length === 0) items = [{ id: sessionId, label: sessionId, detail: '' }];
-                setAvailableSessions(items.reverse()); // Show newest first ideally but simple reverse works
+                }).filter(Boolean) as { id: string; label: string; detail: string; mtimeMs?: number }[];
+                
+                items.sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
+                
+                if (items.length === 0) items = [{ id: sessionId, label: `${sessionId}  [New]`, detail: '' }];
+                setAvailableSessions(items);
                 setIsSelectingSession(true);
               }
             } catch {}

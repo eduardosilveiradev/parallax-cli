@@ -4,7 +4,6 @@ export interface ToolLoopAgentSettings {
   provider: AgentProvider;
   systemInstruction?: string;
   tools?: ToolSet;
-  maxSteps?: number;
   onConfirm?: (tool: { id: string; name: string; input: any }) => Promise<boolean>;
 }
 
@@ -12,21 +11,17 @@ export class ToolLoopAgent {
   private provider: AgentProvider;
   private systemInstruction?: string;
   private tools?: ToolSet;
-  private maxSteps: number;
   private onConfirm?: (tool: { id: string; name: string; input: any }) => Promise<boolean>;
 
   constructor(settings: ToolLoopAgentSettings) {
     this.provider = settings.provider;
     this.systemInstruction = settings.systemInstruction;
     this.tools = settings.tools;
-    this.maxSteps = settings.maxSteps ?? 10;
     this.onConfirm = settings.onConfirm;
   }
 
   async *stream(messages: any[]): AsyncGenerator<StreamPart, void, unknown> {
-    let stepCount = 0;
-    while (stepCount < this.maxSteps) {
-      stepCount++;
+    while (true) {
       const currentTools = [];
       const stream = this.provider.stream({
         systemInstruction: this.systemInstruction,
