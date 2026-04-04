@@ -26,7 +26,8 @@ const AVAILABLE_COMMANDS = [
   { cmd: '/new', desc: 'Starts a brand new session and clears the screen' },
   { cmd: '/init', desc: 'Analyze codebase and create PARALLAX.md' },
   { cmd: '/compact', desc: 'Summarize and compress conversation history to save tokens' },
-  { cmd: '/load', desc: 'Loads or switches to a historical session memory' }
+  { cmd: '/load', desc: 'Loads or switches to a historical session memory' },
+  { cmd: '/commit', desc: 'Creates a commit with the current changes (model generated message)' }
 ];
 
 function ListPicker({ items, label, onSelect, onCancel }: { items: { id: string; label: string; detail?: string }[], label: string, onSelect: (m: string) => void, onCancel: () => void }) {
@@ -254,6 +255,9 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         } else if (command === '/init') {
           displayUserText = '/init';
           sendUserText = "CRITICAL INSTRUCTION: Analyze the entire codebase in the current directory. Generate a 70-120 line comprehensive description of the codebase including architectural details, and write it to 'PARALLAX.md'. This file will be used as the agent's system prompt on subsequent initializations.";
+        } else if (command === '/commit') {
+          displayUserText = '/commit';
+          sendUserText = "CRITICAL INSTRUCTION: Analyze the changes made in this session. Generate a commit message for the current changes.";
         } else if (command === '/compact') {
           const prompt = "CRITICAL INSTRUCTION: Provide an in-depth, highly comprehensive summary of our ENTIRE conversation history up to this point. Include all relevant technical context, code paths, goals, and decisions. This summary will be used to replace our entire context window to save tokens, so ensure no critical information is lost.";
           setBlocks((prev: MessageBlock[]) => [...prev, { type: 'user', text: '/compact' }, { type: 'assistant', text: '' }]);
@@ -475,7 +479,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
                     <Text color="cyan">{tc.name}</Text>
                     {tc.args && Object.keys(tc.args).length > 0 && (
                       <Text dimColor>
-                         {' '}{JSON.stringify(tc.args).length > 200 ? JSON.stringify(tc.args).slice(0, 200) + '...' : JSON.stringify(tc.args)}
+                        {' '}{JSON.stringify(tc.args).length > 200 ? JSON.stringify(tc.args).slice(0, 200) + '...' : JSON.stringify(tc.args)}
                       </Text>
                     )}
                   </Box>
