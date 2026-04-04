@@ -155,6 +155,20 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
     if (exitPrompted) {
       if (key.ctrl && input === 'c') {
         exit();
+        let lastMsg = 'No previous messages.';
+        for (let i = blocks.length - 1; i >= 0; i--) {
+          const b: any = blocks[i];
+          if ((b.type === 'user' || b.type === 'assistant') && b.text) {
+            const words = b.text.trim().split(/\s+/);
+            lastMsg = words.slice(0, 5).join(' ') + (words.length > 5 ? '...' : '');
+            break;
+          }
+        }
+        console.log(`\n`);
+        console.log("Parallax shutting down...")
+        console.log(`Session ID: ${sessionId}`);
+        console.log(`Last message: "${lastMsg}"`);
+        console.log(`\n`);
         process.exit(0);
       } else {
         setExitPrompted(false);
