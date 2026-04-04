@@ -495,7 +495,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       })}
 
       {isStreaming && !pendingConfirm && (
-        <Box marginLeft={2}><Text color="yellow"><Spinner type="dots" /> Thinking...</Text></Box>
+        <Box marginLeft={2}><Text color="yellow"><Spinner type="dots" /> Working...</Text></Box>
       )}
 
       {pendingConfirm && (
