@@ -1,7 +1,13 @@
-const originalConsoleLog = console.log;
-const originalConsoleError = console.error;
-const originalConsoleWarn = console.warn;
-const originalConsoleInfo = console.info;
+let patched = false;
+
+export function applyPatch() {
+  if (patched) return;
+  patched = true;
+  
+  const originalConsoleLog = console.log;
+  const originalConsoleError = console.error;
+  const originalConsoleWarn = console.warn;
+  const originalConsoleInfo = console.info;
 
 function shouldIgnore(...args) {
   if (!args || args.length === 0) return false;
@@ -33,7 +39,8 @@ console.warn = (...args) => {
   originalConsoleWarn(...args);
 };
 
-console.info = (...args) => {
-  if (shouldIgnore(...args)) return;
-  originalConsoleInfo(...args);
-};
+  console.info = (...args) => {
+    if (shouldIgnore(...args)) return;
+    originalConsoleInfo(...args);
+  };
+}

@@ -3,6 +3,7 @@ import path from 'path';
 import { exec, spawn, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import crypto from 'node:crypto';
+import * as diff from 'diff';
 import type { ToolSet, ToolContext } from './agent/types.js';
 import { ToolLoopAgent } from './agent/agent.js';
 
@@ -102,8 +103,9 @@ export const allTools: ToolSet = {
         }
         
         const newContent = content.replace(args.oldText, args.newText);
+        const diffPatch = diff.createPatch(args.path, content, newContent);
         fs.writeFileSync(fullPath, newContent);
-        return { success: true, path: fullPath, message: 'File successfully edited.' };
+        return { success: true, path: fullPath, message: 'File successfully edited.', diff: diffPatch };
       } catch (err: any) {
         return { success: false, error: err.message };
       }

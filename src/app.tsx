@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import * as diff from 'diff';
 
 import { ToolLoopAgent } from './agent/agent.js';
 import { GeminiProvider } from './agent/gemini-provider.js';
@@ -48,6 +49,76 @@ function getToolLabel(name: string, args: any, status: 'calling' | 'done'): stri
       }
       return isDone ? `Finished ${name}` : `Calling ${name}`;
   }
+}
+
+function DiffViewer({ diffLines }: { diffLines: string[] }) {
+  const filtered = diffLines.filter((l: string) => !l.startsWith('===') && !l.startsWith('---') && !l.startsWith('+++') && !l.startsWith('Index:') && l.trim() !== '\\ No newline at end of file');
+
+  let oldLine = 0;
+  let newLine = 0;
+
+  return (
+    <Box flexDirection="column" paddingX={1}>
+      {filtered.map((line: string, idx: number) => {
+        if (line.startsWith('@@')) {
+          const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+          if (match) {
+            oldLine = parseInt(match[1]);
+            newLine = parseInt(match[2]);
+          }
+
+          let plusCount = 0;
+          let minusCount = 0;
+          for (let i = idx + 1; i < filtered.length; i++) {
+            if (filtered[i].startsWith('@@')) break;
+            if (filtered[i].startsWith('+')) plusCount++;
+            if (filtered[i].startsWith('-')) minusCount++;
+          }
+
+          return (
+            <Box key={idx} paddingLeft={2} paddingY={1}>
+              <Text dimColor>·· </Text>
+              {minusCount > 0 && <Text color="red">-{minusCount} </Text>}
+              {plusCount > 0 && <Text color="green">+{plusCount} </Text>}
+              {(plusCount > 0 || minusCount > 0) ? <Text dimColor>lines</Text> : <Text dimColor>Context</Text>}
+            </Box>
+          );
+        }
+
+        let oldCol = '';
+        let newCol = '';
+        if (line.startsWith('+')) {
+          newCol = String(newLine++);
+          const prefix = `${oldCol.padStart(4)} ${newCol.padStart(4)} │ `;
+          return (
+            <Box key={idx} flexDirection="row">
+              <Box width={12} flexShrink={0}><Text dimColor>{prefix}</Text></Box>
+              <Text color="greenBright" backgroundColor="#0d2a0d">{line}</Text>
+            </Box>
+          );
+        } else if (line.startsWith('-')) {
+          oldCol = String(oldLine++);
+          const prefix = `${oldCol.padStart(4)} ${newCol.padStart(4)} │ `;
+          return (
+            <Box key={idx} flexDirection="row">
+              <Box width={12} flexShrink={0}><Text dimColor>{prefix}</Text></Box>
+              <Text color="redBright" backgroundColor="#2a0d0d">{line}</Text>
+            </Box>
+          );
+        } else {
+          oldCol = String(oldLine++);
+          newCol = String(newLine++);
+          const prefix = `${oldCol.padStart(4)} ${newCol.padStart(4)} │ `;
+          return (
+            <Box key={idx} flexDirection="row">
+              <Box width={12} flexShrink={0}><Text dimColor>{prefix}</Text></Box>
+              <Text dimColor>{line}</Text>
+            </Box>
+          );
+        }
+      })}
+    </Box>
+  );
 }
 
 const AVAILABLE_COMMANDS = [
@@ -187,17 +258,17 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       if (fs.existsSync(file)) {
         const data = JSON.parse(fs.readFileSync(file, 'utf8'));
         setSessionId(id);
-        
+
         let loadedBlocks = data.blocks || [];
-        
+
         // Correct legacy ordering: older versions of Parallax mistakenly placed grouped
         // 'tool' blocks before the 'assistant' blocks in the JSON.
         for (let i = 0; i < loadedBlocks.length - 1; i++) {
-          if (loadedBlocks[i].type === 'tool' && loadedBlocks[i+1].type === 'assistant') {
-             const temp = loadedBlocks[i];
-             loadedBlocks[i] = loadedBlocks[i+1];
-             loadedBlocks[i+1] = temp;
-             i++; // Skip the next index since we just swapped it
+          if (loadedBlocks[i].type === 'tool' && loadedBlocks[i + 1].type === 'assistant') {
+            const temp = loadedBlocks[i];
+            loadedBlocks[i] = loadedBlocks[i + 1];
+            loadedBlocks[i + 1] = temp;
+            i++; // Skip the next index since we just swapped it
           }
         }
 
@@ -211,7 +282,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
             flattenedBlocks.push({ ...b, id: b.id || crypto.randomUUID() });
           }
         }
-        
+
         setBlocks(flattenedBlocks);
         setMessages(data.messages || []);
       }
@@ -608,14 +679,32 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         }
         if (block.type === 'tool-call') {
           const tc = block.call;
+
+          let diffLines: string[] | undefined;
+          if (tc.status === 'done') {
+            if (tc.result && typeof tc.result === 'object' && (tc.result as any).diff) {
+              diffLines = String((tc.result as any).diff).split('\n');
+            } else if (tc.name === 'editFile' && tc.args.oldText !== undefined && tc.args.newText !== undefined) {
+              const patch = diff.createPatch(String(tc.args.path) || 'file', String(tc.args.oldText), String(tc.args.newText));
+              diffLines = patch.split('\n');
+            }
+          }
+
           return (
-            <Box key={key} marginLeft={2} flexDirection="row">
-              {tc.status === 'calling'
-                ? <Text color="yellow"><Spinner type="dots" /> </Text>
-                : <Text color="green">✔ </Text>}
-              <Text color="cyan">{getToolLabel(tc.name, tc.args, tc.status as any)}</Text>
-              {tc.status === 'done' && tc.result !== undefined && toolsExpanded && (
-                <Box marginLeft={2}><Text dimColor wrap="truncate-end">→ {JSON.stringify(tc.result).slice(0, 100)}</Text></Box>
+            <Box key={key} marginLeft={2} flexDirection="column">
+              <Box flexDirection="row">
+                {tc.status === 'calling'
+                  ? <Text color="yellow"><Spinner type="dots" /> </Text>
+                  : <Text color="green">✔ </Text>}
+                <Text color="cyan">{getToolLabel(tc.name, tc.args, tc.status as any)}</Text>
+                {tc.status === 'done' && tc.result !== undefined && toolsExpanded && tc.name !== 'editFile' && (
+                  <Box marginLeft={2}><Text dimColor wrap="truncate-end">→ {JSON.stringify(tc.result).slice(0, 100)}</Text></Box>
+                )}
+              </Box>
+              {diffLines && (
+                <Box marginLeft={4} flexDirection="column" marginTop={1}>
+                  <DiffViewer diffLines={diffLines} />
+                </Box>
               )}
             </Box>
           );
@@ -627,15 +716,31 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         <Box marginLeft={2}><Text color="yellow"><Spinner type="dots" /> Working...</Text></Box>
       )}
 
-      {pendingConfirm && (
-        <Box marginTop={1} marginLeft={2} flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
-          <Text color="yellow" bold>⚠ Agent wants to execute: {getToolLabel(pendingConfirm.name, pendingConfirm.input, 'calling')}</Text>
-          <Text dimColor>{JSON.stringify(pendingConfirm.input)}</Text>
-          <Box marginTop={1}>
-            <Text>Allow execution? <Text color="green" bold>[Y/Enter] Yes</Text> <Text color="red" bold>[N/Esc] No</Text></Text>
+      {pendingConfirm && (() => {
+        let confirmDiffLines: string[] | undefined;
+        if (pendingConfirm.name === 'editFile' && pendingConfirm.input && pendingConfirm.input.oldText !== undefined && pendingConfirm.input.newText !== undefined) {
+          const patch = diff.createPatch(String(pendingConfirm.input.path) || 'file', String(pendingConfirm.input.oldText), String(pendingConfirm.input.newText));
+          confirmDiffLines = patch.split('\n');
+        }
+
+        return (
+          <Box marginTop={1} marginLeft={2} flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
+            <Text color="yellow" bold>⚠ Agent wants to execute: {pendingConfirm.input}</Text>
+
+            {confirmDiffLines ? (
+              <Box flexDirection="column" borderStyle="single" borderColor="gray" marginTop={1} marginBottom={1}>
+                <DiffViewer diffLines={confirmDiffLines} />
+              </Box>
+            ) : (
+              <Text dimColor>{JSON.stringify(pendingConfirm.input)}</Text>
+            )}
+
+            <Box marginTop={0}>
+              <Text>Allow execution? <Text color="green" bold>[Y/Enter] Yes</Text> <Text color="red" bold>[N/Esc] No</Text></Text>
+            </Box>
           </Box>
-        </Box>
-      )}
+        );
+      })()}
 
       {!isStreaming && query.startsWith('/') && !isSelectingModel && !isSelectingSession && (
         <Box flexDirection="column" marginTop={1} paddingX={1} borderStyle="round" borderColor="blue">
@@ -687,7 +792,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       <Box marginTop={1} flexDirection="row" justifyContent="space-between">
         {exitPrompted ? <Text color="red" bold>Press Ctrl+C again to exit.</Text> : <Text dimColor>Ctrl+C - Exit {isStreaming ? '| Esc - Stop' : '| Tab - Cycle Mode'}</Text>}
         <Text dimColor>
-          Ctrl+O - Reasoning {toolsExpanded ? <Text color="magenta" bold>ON</Text> : 'OFF'} | Shift+Tab - YOLO {yoloMode ? <Text color="red" bold>ON</Text> : 'OFF'}
+          Ctrl+O - Verbose mode {toolsExpanded ? <Text color="magenta" bold>ON</Text> : 'OFF'} | Shift+Tab - YOLO {yoloMode ? <Text dimColor color="red" bold>ON</Text> : <Text dimColor>OFF</Text>}
         </Text>
       </Box>
 

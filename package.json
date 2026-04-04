@@ -15,6 +15,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "ai": "^6.0.145",
     "ai-sdk-provider-gemini-cli": "^2.0.1",
+    "diff": "^8.0.4",
     "ink": "^6.8.0",
     "ink-spinner": "^5.0.0",
     "ink-text-input": "^6.0.0",
@@ -25,6 +26,7 @@
     "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
+    "@types/diff": "^8.0.0",
     "@types/marked-terminal": "^6.1.1",
     "@types/node": "^25.5.2",
     "@types/react": "^19.2.14",
