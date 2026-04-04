@@ -65,6 +65,20 @@ function getToolLabel(name: string, args: any, status: 'calling' | 'done', resul
   }
 }
 
+function Timer({ startTime, endTime }: { startTime?: number; endTime?: number }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (endTime || !startTime) return;
+    const interval = setInterval(() => setNow(Date.now()), 100);
+    return () => clearInterval(interval);
+  }, [startTime, endTime]);
+
+  if (!startTime) return <Text></Text>;
+  const ms = (endTime || now) - startTime;
+  const s = (ms / 1000).toFixed(1);
+  return <Text>{s}s</Text>;
+}
+
 function DiffViewer({ diffLines }: { diffLines: string[] }) {
   const filtered = diffLines.filter((l: string) => !l.startsWith('===') && !l.startsWith('---') && !l.startsWith('+++') && !l.startsWith('Index:') && l.trim() !== '\\ No newline at end of file');
 
@@ -610,7 +624,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
               let updated = [...prev];
               if (thinkingBlockIndex === -1) {
                 thinkingBlockIndex = updated.length;
-                updated.push({ type: 'thinking', id: crypto.randomUUID(), text: currentThinking });
+                updated.push({ type: 'thinking', id: crypto.randomUUID(), text: currentThinking, startTime: Date.now() });
               } else {
                 (updated[thinkingBlockIndex] as any).text = currentThinking;
               }
@@ -621,6 +635,9 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
             const currentText = fullText;
             setBlocks((prev) => {
               let updated = [...prev];
+              if (thinkingBlockIndex !== -1 && !(updated[thinkingBlockIndex] as any).endTime) {
+                (updated[thinkingBlockIndex] as any).endTime = Date.now();
+              }
               if (assistantBlockIndex === -1) {
                 assistantBlockIndex = updated.length;
                 updated.push({ type: 'assistant', id: crypto.randomUUID(), text: currentText });
@@ -636,7 +653,14 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
               args: part.input as Record<string, unknown>,
               status: 'calling',
             };
-            setBlocks((prev) => [...prev, { type: 'tool-call', id: tc.id, call: tc }]);
+            setBlocks((prev) => {
+              let updated = [...prev];
+              if (thinkingBlockIndex !== -1 && !(updated[thinkingBlockIndex] as any).endTime) {
+                (updated[thinkingBlockIndex] as any).endTime = Date.now();
+              }
+              updated.push({ type: 'tool-call', id: tc.id, call: tc });
+              return updated;
+            });
           } else if (part.type === 'tool-result') {
             setBlocks((prev: MessageBlock[]) => {
               const updated = [...prev];
@@ -650,6 +674,13 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
               return updated;
             });
           } else if (part.type === 'finish-step') {
+            setBlocks((prev) => {
+              let updated = [...prev];
+              if (thinkingBlockIndex !== -1 && !(updated[thinkingBlockIndex] as any).endTime) {
+                (updated[thinkingBlockIndex] as any).endTime = Date.now();
+              }
+              return updated;
+            });
             fullText = '';
             thinkingText = '';
             thinkingBlockIndex = -1;
@@ -688,10 +719,25 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         if (block.type === 'user') return <Box key={key}><Text color="green" bold>❯ </Text><Text>{block.text}</Text></Box>;
         if (block.type === 'error') return <Box key={key}><Text color="red">✖ Error: {block.text}</Text></Box>;
         if (block.type === 'thinking') {
+          const isExpanded = toolsExpanded;
+          const thinkingText = (block as any).endTime ? (
+            <Text>💭 Thought for <Timer startTime={(block as any).startTime} endTime={(block as any).endTime} /></Text>
+          ) : (
+            <Text>💭 Thinking (<Timer startTime={(block as any).startTime} />)</Text>
+          );
+          
           return (
             <Box key={key} marginLeft={2} flexDirection="column">
-              <Text color="magenta" dimColor>💭 Thinking</Text>
-              <Box marginLeft={2}><Text dimColor>{block.text}</Text></Box>
+              <Text color="magenta" dimColor>
+                {thinkingText} {!isExpanded && <Text>(Ctrl+O to expand)</Text>}
+              </Text>
+              <Box marginLeft={2}>
+                {isExpanded ? (
+                  <Text dimColor>{block.text}</Text>
+                ) : (
+                  <Text dimColor wrap="truncate-end">{block.text.replace(/\\s+/g, ' ').trim()}</Text>
+                )}
+              </Box>
             </Box>
           );
         }

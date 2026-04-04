@@ -12,7 +12,7 @@ export type MessageBlock =
   | { type: 'user'; id: string; text: string }
   | { type: 'assistant'; id: string; text: string }
   | { type: 'error'; id: string; text: string }
-  | { type: 'thinking'; id: string; text: string }
+  | { type: 'thinking'; id: string; text: string; startTime?: number; endTime?: number }
   | { type: 'tool-call'; id: string; call: ToolCallInfo }
   | { type: 'tool'; id?: string; calls: ToolCallInfo[] }; // Legacy loaded sessions
 
