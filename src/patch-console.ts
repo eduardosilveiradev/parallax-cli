@@ -9,7 +9,7 @@ export function applyPatch() {
   const originalConsoleWarn = console.warn;
   const originalConsoleInfo = console.info;
 
-function shouldIgnore(...args) {
+function shouldIgnore(...args: any[]) {
   if (!args || args.length === 0) return false;
   const msg = typeof args[0] === 'string' ? args[0] : (args[0] && typeof args[0].message === 'string' ? args[0].message : String(args[0]));
   
@@ -24,22 +24,22 @@ function shouldIgnore(...args) {
   return false;
 }
 
-console.log = (...args) => {
-  if (shouldIgnore(...args)) return;
-  originalConsoleLog(...args);
-};
+  console.log = (...args: any[]) => {
+    if (shouldIgnore(...args)) return;
+    originalConsoleLog(...args);
+  };
 
-console.error = (...args) => {
-  if (shouldIgnore(...args)) return;
-  originalConsoleError(...args);
-};
+  console.error = (...args: any[]) => {
+    if (shouldIgnore(...args)) return;
+    originalConsoleError(...args);
+  };
 
-console.warn = (...args) => {
-  if (shouldIgnore(...args)) return;
-  originalConsoleWarn(...args);
-};
+  console.warn = (...args: any[]) => {
+    if (shouldIgnore(...args)) return;
+    originalConsoleWarn(...args);
+  };
 
-  console.info = (...args) => {
+  console.info = (...args: any[]) => {
     if (shouldIgnore(...args)) return;
     originalConsoleInfo(...args);
   };

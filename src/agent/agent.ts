@@ -58,7 +58,7 @@ export class ToolLoopAgent {
             if (toolDef.requiresConfirmation && this.onConfirm) {
               const approved = await this.onConfirm({ id: tc.id, name: tc.name, input: tc.input });
               if (!approved) {
-                output = { error: 'User denied execute permission.' };
+                output = { error: 'The user manually rejected/cancelled the execution of this tool.' };
               } else {
                 output = await toolDef.execute(tc.input, context);
               }

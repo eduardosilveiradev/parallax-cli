@@ -22,9 +22,23 @@ marked.setOptions({ renderer: new TerminalRenderer() as any });
 
 const MODEL = 'gemini-3-flash-preview';
 
-function getToolLabel(name: string, args: any, status: 'calling' | 'done'): string {
+function getToolLabel(name: string, args: any, status: 'calling' | 'done', result?: any): string {
   const isDone = status === 'done';
+  const isFail = isDone && result && typeof result === 'object' && result.success === false;
   const fileName = args?.path ? path.basename(args.path) : '';
+
+  if (isFail) {
+    switch (name) {
+      case 'listDirectory': return `Failed to list ${args.path}`;
+      case 'readFile': return `Failed to read ${fileName}`;
+      case 'writeFile': return `Failed to write ${fileName}`;
+      case 'editFile': return `Failed to edit ${fileName}`;
+      case 'runCommand': return `Failed to run ${args.command}`;
+      case 'subagent': return `Subagent failed`;
+      case 'checkCommandStatus': return `Failed to check command ${args.commandId}`;
+      default: return `Failed ${name}`;
+    }
+  }
 
   switch (name) {
     case 'listDirectory':
@@ -396,6 +410,10 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       if (isStreaming && abortController) {
         abortController.abort();
         setIsStreaming(false);
+        const interruptId = crypto.randomUUID();
+        const interruptMsg = '[System: The user interrupted / abruptly stopped the agent iteration stream.]';
+        setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: interruptId, text: interruptMsg }]);
+        setMessages((prev: any[]) => [...prev, { role: 'user', parts: [{ text: interruptMsg }] }]);
       } else {
         setExitPrompted(true);
       }
@@ -403,6 +421,10 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       if (isStreaming && abortController) {
         abortController.abort();
         setIsStreaming(false);
+        const interruptId = crypto.randomUUID();
+        const interruptMsg = '[System: The user interrupted / abruptly stopped the agent iteration stream.]';
+        setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: interruptId, text: interruptMsg }]);
+        setMessages((prev: any[]) => [...prev, { role: 'user', parts: [{ text: interruptMsg }] }]);
       }
     }
   });
@@ -666,7 +688,6 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         if (block.type === 'user') return <Box key={key}><Text color="green" bold>❯ </Text><Text>{block.text}</Text></Box>;
         if (block.type === 'error') return <Box key={key}><Text color="red">✖ Error: {block.text}</Text></Box>;
         if (block.type === 'thinking') {
-          if (!toolsExpanded) return null;
           return (
             <Box key={key} marginLeft={2} flexDirection="column">
               <Text color="magenta" dimColor>💭 Thinking</Text>
@@ -695,17 +716,24 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
               <Box flexDirection="row">
                 {tc.status === 'calling'
                   ? <Text color="yellow"><Spinner type="dots" /> </Text>
-                  : <Text color="green">✔ </Text>}
-                <Text color="cyan">{getToolLabel(tc.name, tc.args, tc.status as any)}</Text>
-                {tc.status === 'done' && tc.result !== undefined && toolsExpanded && tc.name !== 'editFile' && (
+                  : tc.result && typeof tc.result === 'object' && (tc.result as any).success === false
+                    ? <Text color="red">✖ </Text>
+                    : <Text color="green">✔ </Text>}
+                <Text color="cyan">{getToolLabel(tc.name, tc.args, tc.status as any, tc.result)}</Text>
+                {tc.status === 'done' && tc.result !== undefined && typeof tc.result === 'object' && (tc.result as any).success !== false && toolsExpanded && tc.name !== 'editFile' && (
                   <Box marginLeft={2}><Text dimColor wrap="truncate-end">→ {JSON.stringify(tc.result).slice(0, 100)}</Text></Box>
                 )}
               </Box>
-              {diffLines && (
+              {tc.status === 'done' && tc.result && typeof tc.result === 'object' && (tc.result as any).success === false ? (
+                <Box marginLeft={4} flexDirection="column" marginTop={0}>
+                   <Text color="red">Error: {String((tc.result as any).error || 'Unknown failure')}</Text>
+                </Box>
+              ) : null}
+              {diffLines && typeof tc.result === 'object' && (tc.result as any).success !== false ? (
                 <Box marginLeft={4} flexDirection="column" marginTop={1}>
                   <DiffViewer diffLines={diffLines} />
                 </Box>
-              )}
+              ) : null}
             </Box>
           );
         }
@@ -725,11 +753,19 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
 
         return (
           <Box marginTop={1} marginLeft={2} flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
-            <Text color="yellow" bold>⚠ Agent wants to execute: {pendingConfirm.input}</Text>
+            <Text color="yellow" bold>⚠ Agent wants to execute: {getToolLabel(pendingConfirm.name, pendingConfirm.input, 'calling')}</Text>
 
             {confirmDiffLines ? (
               <Box flexDirection="column" borderStyle="single" borderColor="gray" marginTop={1} marginBottom={1}>
                 <DiffViewer diffLines={confirmDiffLines} />
+              </Box>
+            ) : pendingConfirm.name === 'runCommand' && pendingConfirm.input && pendingConfirm.input.command ? (
+              <Box marginLeft={2} marginTop={1} marginBottom={0}>
+                <Text>{String(marked.parse(`\`\`\`bash\n${pendingConfirm.input.command}\n\`\`\``)).trim()}</Text>
+              </Box>
+            ) : pendingConfirm.name === 'writeFile' && pendingConfirm.input && pendingConfirm.input.content ? (
+              <Box marginLeft={2} marginTop={1} marginBottom={0}>
+                <Text>{String(marked.parse(`\`\`\`${pendingConfirm.input.path ? path.extname(pendingConfirm.input.path).slice(1) : ''}\n${pendingConfirm.input.content}\n\`\`\``)).trim()}</Text>
               </Box>
             ) : (
               <Text dimColor>{JSON.stringify(pendingConfirm.input)}</Text>
@@ -762,7 +798,9 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
 
       {isSelectingModel && (
         <ListPicker
-          items={Array.from(VALID_GEMINI_MODELS as Set<string>).map((m) => ({ id: m, label: m }))}
+          items={Array.from(VALID_GEMINI_MODELS as Set<string>)
+            .filter((m) => !m.includes('3.1') && !m.includes('2.5'))
+            .map((m) => ({ id: m, label: m }))}
           label="Select a Gemini Model:"
           onSelect={(m) => { setCurrentModel(m); setIsSelectingModel(false); }}
           onCancel={() => setIsSelectingModel(false)}

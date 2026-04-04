@@ -164,7 +164,7 @@ export class GeminiProvider implements AgentProvider {
       model: this.model,
       contents: messages,
       config: {
-        thinkingConfig: { thinkingLevel: 'HIGH' }
+        thinkingConfig: { includeThoughts: true, thinkingLevel: 'HIGH' }
       }
     };
 
