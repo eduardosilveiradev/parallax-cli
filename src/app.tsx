@@ -214,10 +214,10 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
 
       if (cmd.startsWith('/')) {
         let command = parts[0].toLowerCase();
-        
+
         const filtered = AVAILABLE_COMMANDS.filter(c => c.cmd.startsWith(command));
         if (filtered.length > 0 && commandIndex < filtered.length && command !== filtered[commandIndex].cmd) {
-           command = filtered[commandIndex].cmd;
+          command = filtered[commandIndex].cmd;
         }
 
         if (command === '/') {
@@ -243,40 +243,40 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         } else if (command === '/compact') {
           const prompt = "CRITICAL INSTRUCTION: Provide an in-depth, highly comprehensive summary of our ENTIRE conversation history up to this point. Include all relevant technical context, code paths, goals, and decisions. This summary will be used to replace our entire context window to save tokens, so ensure no critical information is lost.";
           setBlocks((prev: MessageBlock[]) => [...prev, { type: 'user', text: '/compact' }, { type: 'assistant', text: '' }]);
-          
+
           const provider = new GeminiProvider(currentModel);
           const newMessages = [...messages, provider.createUserMessage(prompt)];
           setMessages(newMessages); // Set temporarily so stream can evaluate it
           setIsStreaming(true);
 
           setTimeout(async () => {
-             let fullText = '';
-             try {
-                const compactAgent = new ToolLoopAgent({ provider, tools: allTools, systemInstruction: "You are a coding assistant." });
-                const stream = compactAgent.stream(newMessages);
-                for await (const part of stream) {
-                  if (part.type === 'text-delta') {
-                    fullText += part.text;
-                    setBlocks((prev: MessageBlock[]) => {
-                      const next = [...prev];
-                      const last = next[next.length - 1];
-                      if (last.type === 'assistant') last.text = fullText;
-                      return next;
-                    });
-                  }
+            let fullText = '';
+            try {
+              const compactAgent = new ToolLoopAgent({ provider, tools: allTools, systemInstruction: "You are a coding assistant." });
+              const stream = compactAgent.stream(newMessages);
+              for await (const part of stream) {
+                if (part.type === 'text-delta') {
+                  fullText += part.text;
+                  setBlocks((prev: MessageBlock[]) => {
+                    const next = [...prev];
+                    const last = next[next.length - 1];
+                    if (last.type === 'assistant') last.text = fullText;
+                    return next;
+                  });
                 }
-                
-                // Done! Nuke the context
-                setBlocks([{ type: 'assistant', text: `*[History Compacted]*\n\n${fullText}` }]);
-                setMessages([
-                  provider.createUserMessage("Here is the comprehensive summary of our previous conversation up to this point:\n\n" + fullText),
-                  { role: 'model', parts: [{ text: "Understood. I have fully internalized this historical context and am ready to proceed with your next instructions." }] } as any
-                ]);
-             } catch (err: any) {
-               setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', text: `Compact failed: ${err.message}` }]);
-             } finally {
-               setIsStreaming(false);
-             }
+              }
+
+              // Done! Nuke the context
+              setBlocks([{ type: 'assistant', text: `*[History Compacted]*\n\n${fullText}` }]);
+              setMessages([
+                provider.createUserMessage("Here is the comprehensive summary of our previous conversation up to this point:\n\n" + fullText),
+                { role: 'model', parts: [{ text: "Understood. I have fully internalized this historical context and am ready to proceed with your next instructions." }] } as any
+              ]);
+            } catch (err: any) {
+              setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', text: `Compact failed: ${err.message}` }]);
+            } finally {
+              setIsStreaming(false);
+            }
           }, 0);
           return;
         } else if (command === '/load') {
@@ -292,7 +292,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
                     const stat = fs.statSync(filePath);
                     const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
                     if (!data.messages || data.messages.length === 0) {
-                      try { fs.unlinkSync(filePath); } catch {} // Cleanup empty sessions
+                      try { fs.unlinkSync(filePath); } catch { } // Cleanup empty sessions
                       return null;
                     }
                     const blks = data.blocks || [];
@@ -310,14 +310,14 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
                     return null;
                   }
                 }).filter(Boolean) as { id: string; label: string; detail: string; mtimeMs?: number }[];
-                
+
                 items.sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
-                
+
                 if (items.length === 0) items = [{ id: sessionId, label: `${sessionId}  [New]`, detail: '' }];
                 setAvailableSessions(items);
                 setIsSelectingSession(true);
               }
-            } catch {}
+            } catch { }
             return;
           }
           loadSession(args[0]);
@@ -338,7 +338,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       const agent = new ToolLoopAgent({
         provider,
         tools: allTools,
-        systemInstruction: `You are a coding assistant.\nAlways respond in the users language.\nAlways use tools proactively.\nWhen reading/listing files do NOT use bash commands. USE YOUR TOOLS.`,
+        systemInstruction: `You are a coding assistant.\nAlways respond in the users language.\nAlways use tools proactively.\nWhen reading/listing files do NOT use bash commands. USE YOUR TOOLS.\nYou are in a terminal environment, not a GUI, this means you should avoid markdown at all costs.`,
         onConfirm: async (tc) => {
           if (yoloModeRef.current) return true;
           return new Promise<boolean>((resolve) => {
@@ -504,36 +504,36 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       )}
 
       {isSelectingModel && (
-         <ListPicker 
-           items={Array.from(VALID_GEMINI_MODELS as Set<string>).map((m) => ({ id: m, label: m }))} 
-           label="Select a Gemini Model:" 
-           onSelect={(m) => { setCurrentModel(m); setIsSelectingModel(false); }} 
-           onCancel={() => setIsSelectingModel(false)} 
-         />
+        <ListPicker
+          items={Array.from(VALID_GEMINI_MODELS as Set<string>).map((m) => ({ id: m, label: m }))}
+          label="Select a Gemini Model:"
+          onSelect={(m) => { setCurrentModel(m); setIsSelectingModel(false); }}
+          onCancel={() => setIsSelectingModel(false)}
+        />
       )}
 
       {isSelectingSession && (
-         <ListPicker 
-           items={availableSessions} 
-           label="Select a historical session:" 
-           onSelect={(id) => loadSession(id)} 
-           onCancel={() => setIsSelectingSession(false)} 
-         />
+        <ListPicker
+          items={availableSessions}
+          label="Select a historical session:"
+          onSelect={(id) => loadSession(id)}
+          onCancel={() => setIsSelectingSession(false)}
+        />
       )}
 
       {!isStreaming && !isSelectingModel && !isSelectingSession && (
         <Box marginTop={1}>
           <Text color="cyan" bold>❯ </Text>
-          <TextInput 
-             value={query} 
-             onChange={(val) => {
-               if (suppressInputHandling.current) {
-                 suppressInputHandling.current = false;
-                 return;
-               }
-               setQuery(val);
-             }} 
-             onSubmit={handleSubmit} 
+          <TextInput
+            value={query}
+            onChange={(val) => {
+              if (suppressInputHandling.current) {
+                suppressInputHandling.current = false;
+                return;
+              }
+              setQuery(val);
+            }}
+            onSubmit={handleSubmit}
           />
         </Box>
       )}
