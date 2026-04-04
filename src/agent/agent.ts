@@ -1,4 +1,4 @@
-import type { AgentProvider, StreamPart, ToolSet } from './types.js';
+import type { AgentProvider, StreamPart, ToolSet, ToolContext } from './types.js';
 
 export interface ToolLoopAgentSettings {
   provider: AgentProvider;
@@ -49,15 +49,21 @@ export class ToolLoopAgent {
           const toolDef = this.tools?.[tc.name];
           let output;
           if (toolDef) {
+            const context: ToolContext = {
+              provider: this.provider,
+              tools: this.tools!,
+              onConfirm: this.onConfirm
+            };
+
             if (toolDef.requiresConfirmation && this.onConfirm) {
               const approved = await this.onConfirm({ id: tc.id, name: tc.name, input: tc.input });
               if (!approved) {
                 output = { error: 'User denied execute permission.' };
               } else {
-                output = await toolDef.execute(tc.input);
+                output = await toolDef.execute(tc.input, context);
               }
             } else {
-              output = await toolDef.execute(tc.input);
+              output = await toolDef.execute(tc.input, context);
             }
           } else {
             output = { error: `Tool ${tc.name} not found` };

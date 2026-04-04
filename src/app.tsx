@@ -551,7 +551,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
             value={query}
             onChange={(val) => {
               if (suppressInputHandling.current) {
-                suppressInputHandling.current = false;
+                // DON'T set suppressInputHandling.current = false here anymore
                 return;
               }
               setQuery(val);

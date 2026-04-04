@@ -24,10 +24,16 @@ export interface StreamPart {
   reason?: string;
 }
 
+export interface ToolContext {
+  provider: AgentProvider;
+  tools: ToolSet;
+  onConfirm?: (tool: { id: string; name: string; input: any }) => Promise<boolean>;
+}
+
 export interface ToolDefinition {
   description: string;
   parameters: any;
-  execute: (args: any) => Promise<unknown>;
+  execute: (args: any, context?: ToolContext) => Promise<unknown>;
   requiresConfirmation?: boolean;
 }
 

@@ -2,7 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import type { ToolSet } from './agent/types.js';
+import type { ToolSet, ToolContext } from './agent/types.js';
+import { ToolLoopAgent } from './agent/agent.js';
 
 const execAsync = promisify(exec);
 
@@ -78,6 +79,44 @@ export const allTools: ToolSet = {
         return { success: true, output: stdout || stderr };
       } catch (err: any) {
         return { success: false, error: err.message, output: err.stdout || err.stderr };
+      }
+    }
+  },
+  subagent: {
+    description: 'Spawns a subagent to perform a specific task.',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'The task to perform' },
+        systemInstruction: { type: 'string', description: 'Optional system instruction for the subagent' }
+      },
+      required: ['prompt']
+    },
+    execute: async (args: any, context?: ToolContext) => {
+      if (!context) {
+        return { success: false, error: 'Context not provided to subagent tool' };
+      }
+      try {
+        const subagent = new ToolLoopAgent({
+          provider: context.provider,
+          tools: context.tools,
+          systemInstruction: args.systemInstruction || 'You are a subagent helping a main agent with a task.',
+          onConfirm: context.onConfirm
+        });
+
+        const messages = [context.provider.createUserMessage(args.prompt)];
+        let fullText = '';
+        const stream = subagent.stream(messages);
+
+        for await (const part of stream) {
+          if (part.type === 'text-delta') {
+            fullText += part.text;
+          }
+        }
+
+        return { success: true, answer: fullText };
+      } catch (err: any) {
+        return { success: false, error: err.message };
       }
     }
   }
