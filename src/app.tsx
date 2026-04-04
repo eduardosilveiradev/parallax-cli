@@ -257,7 +257,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
           sendUserText = "CRITICAL INSTRUCTION: Analyze the entire codebase in the current directory. Generate a 70-120 line comprehensive description of the codebase including architectural details, and write it to 'PARALLAX.md'. This file will be used as the agent's system prompt on subsequent initializations.";
         } else if (command === '/commit') {
           displayUserText = '/commit';
-          sendUserText = "CRITICAL INSTRUCTION: Analyze the changes made in this session. Generate a commit message for the current changes.";
+          sendUserText = "CRITICAL INSTRUCTION: Analyze the changes made in this session. Generate a commit message for the current changes. Afterwards commit with that message and push to origin.";
         } else if (command === '/compact') {
           const prompt = "CRITICAL INSTRUCTION: Provide an in-depth, highly comprehensive summary of our ENTIRE conversation history up to this point. Include all relevant technical context, code paths, goals, and decisions. This summary will be used to replace our entire context window to save tokens, so ensure no critical information is lost.";
           setBlocks((prev: MessageBlock[]) => [...prev, { type: 'user', text: '/compact' }, { type: 'assistant', text: '' }]);
