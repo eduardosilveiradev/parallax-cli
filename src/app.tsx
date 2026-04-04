@@ -473,6 +473,11 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
                   <Box>
                     {tc.status === 'calling' ? <Text color="yellow"><Spinner type="dots" /> </Text> : <Text color="green">✔ </Text>}
                     <Text color="cyan">{tc.name}</Text>
+                    {tc.args && Object.keys(tc.args).length > 0 && (
+                      <Text dimColor>
+                         {' '}{JSON.stringify(tc.args).length > 200 ? JSON.stringify(tc.args).slice(0, 200) + '...' : JSON.stringify(tc.args)}
+                      </Text>
+                    )}
                   </Box>
                   {tc.status === 'done' && tc.result !== undefined && (
                     <Box marginLeft={4}><Text dimColor wrap="truncate-end">→ {JSON.stringify(tc.result).slice(0, 100)}</Text></Box>
@@ -485,7 +490,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         return null;
       })}
 
-      {isStreaming && blocks.length > 0 && blocks[blocks.length - 1].type === 'user' && !pendingConfirm && (
+      {isStreaming && !pendingConfirm && (
         <Box marginLeft={2}><Text color="yellow"><Spinner type="dots" /> Thinking...</Text></Box>
       )}
 
