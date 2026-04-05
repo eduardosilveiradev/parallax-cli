@@ -15,23 +15,11 @@ import { allTools, activeCommands } from './tools.js';
 import { loadMcpTools } from './mcp.js';
 import { loadWorkspaceSkills, SkillSummary } from './skills.js';
 import type { MessageBlock, ToolCallInfo, ToolSet, ToolDefinition } from './agent/types.js';
-import { VALID_GEMINI_MODELS } from '@google/gemini-cli-core';
+import { fetchAvailableModels, ModelListing } from './agent/model-loader.js';
 
 type AppMode = 'agent' | 'plan' | 'debug';
 
 marked.setOptions({ renderer: new TerminalRenderer() as any });
-
-const PARALLAX_MODELS = [
-  ...Array.from(VALID_GEMINI_MODELS as Set<string>).map(m => ({ id: `gemini:${m}`, label: `gemini:${m}` })),
-  { id: 'openai:gpt-4o', label: 'openai:gpt-4o' },
-  { id: 'openai:gpt-4o-mini', label: 'openai:gpt-4o-mini' },
-  { id: 'openai:o1', label: 'openai:o1' },
-  { id: 'openai:o3-mini', label: 'openai:o3-mini' },
-  { id: 'anthropic:claude-3-5-sonnet-latest', label: 'anthropic:claude-3-5-sonnet' },
-  { id: 'anthropic:claude-3-7-sonnet-latest', label: 'anthropic:claude-3-7-sonnet' },
-  { id: 'ollama:llama3.3', label: 'ollama:llama3.3' },
-  { id: 'ollama:qwen3:14b', label: 'ollama:qwen3:14b' }
-];
 
 const MODEL = 'gemini:gemini-3-flash-preview';
 
@@ -173,45 +161,93 @@ const AVAILABLE_COMMANDS = [
   { cmd: '/parallax', desc: 'Spawns a Master Coordinator Agent to orchestrate subagents for a large task' }
 ];
 
-function ListPicker({ items, label, onSelect, onCancel }: { items: { id: string; label: string; detail?: string }[], label: string, onSelect: (m: string) => void, onCancel: () => void }) {
+function ListPicker({ items, label, onSelect, onCancel }: { items: { id: string; label: string; detail?: string; group?: string }[], label: string, onSelect: (m: string) => void, onCancel: () => void }) {
   const [index, setIndex] = useState(0);
+  const [query, setQuery] = useState('');
+
+  const filteredItems = items.filter(m => m.label.toLowerCase().includes(query.toLowerCase()) || m.detail?.toLowerCase().includes(query.toLowerCase()) || m.group?.toLowerCase().includes(query.toLowerCase()));
+
+  useEffect(() => {
+    if (index >= filteredItems.length) {
+      setIndex(Math.max(0, filteredItems.length - 1));
+    }
+  }, [filteredItems, index]);
 
   useInput((_input, key) => {
     if (key.upArrow) {
       setIndex((i: number) => Math.max(0, i - 1));
+      return;
     }
     if (key.downArrow) {
-      setIndex((i: number) => Math.min(items.length - 1, i + 1));
+      setIndex((i: number) => Math.min(filteredItems.length - 1, i + 1));
+      return;
     }
-    if (key.return && items.length > 0) {
-      onSelect(items[index].id);
+    if (key.return && filteredItems.length > 0) {
+      onSelect(filteredItems[index].id);
+      return;
     }
     if (key.escape || (key.ctrl && _input === 'c')) {
       onCancel();
+      return;
+    }
+    if (key.backspace || key.delete) {
+      setQuery(q => q.slice(0, -1));
+      return;
+    }
+    if (_input && !key.meta && !key.ctrl && !key.leftArrow && !key.rightArrow) {
+      const char = _input.replace(/[\x00-\x1F\x7F-\x9F]/g, '');
+      if (char) {
+        setQuery(current => current + char);
+        setIndex(0);
+      }
     }
   });
+
+  let currentGroup = '';
 
   return (
     <Box flexDirection="column" marginTop={1} marginLeft={2}>
       <Text color="magenta" bold>{label}</Text>
-      {items.map((m, i) => {
+      {query.length > 0 && (
+        <Box marginBottom={1} marginLeft={2}>
+          <Text color="cyan">Find: {query}█</Text>
+        </Box>
+      )}
+      {filteredItems.length === 0 && (
+        <Box marginLeft={2}>
+          <Text dimColor>No matches found.</Text>
+        </Box>
+      )}
+      {filteredItems.map((m, i) => {
         const isSelected = i === index;
+        const showGroup = m.group && m.group !== currentGroup;
+        if (showGroup) {
+          currentGroup = m.group!;
+        }
+
         return (
-          <Box key={m.id}>
-            <Text color={isSelected ? 'cyan' : 'gray'} bold={isSelected}>
-              {isSelected ? '❯ ' : '  '}
-              {m.label}
-            </Text>
-            {m.detail && (
-              <Box marginLeft={2}>
-                <Text dimColor italic>— "{m.detail}"</Text>
+          <Box key={m.id} flexDirection="column">
+            {showGroup && (
+              <Box marginTop={1} marginBottom={0}>
+                <Text color="gray" bold>── {m.group}</Text>
               </Box>
             )}
+            <Box flexDirection="row">
+              <Text color={isSelected ? 'cyan' : 'gray'} bold={isSelected}>
+                {isSelected ? '❯ ' : '  '}
+                {m.label}
+              </Text>
+              {m.detail && (
+                <Box marginLeft={2}>
+                  <Text dimColor italic>— "{m.detail}"</Text>
+                </Box>
+              )}
+            </Box>
           </Box>
         );
       })}
       <Box marginTop={1}>
-        <Text dimColor>Use Up/Down arrows to navigate, Enter to select, Esc to cancel.</Text>
+        <Text dimColor>Use Up/Down arrows to navigate, type to search, Enter to select.</Text>
       </Box>
     </Box>
   );
@@ -269,7 +305,7 @@ function SafeTextInput({ value, onChange, onSubmit, onCancel }: { value: string,
 
 export default function App({ initialPrompt }: { initialPrompt?: string } = {}) {
   const { exit } = useApp();
-  const [sessionId, setSessionId] = useState(() => crypto.randomBytes(4).toString('hex'));
+  const [sessionId, setSessionId] = useState<string>(() => crypto.randomBytes(4).toString('hex'));
   const HISTORY_FILE = path.join(os.homedir(), '.parallax', `${sessionId}.json`);
   const [currentModel, setCurrentModel] = useState(MODEL);
   const [mode, setMode] = useState<AppMode>('agent');
@@ -280,6 +316,8 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
   const [toolsExpanded, setToolsExpanded] = useState(false);
   const [exitPrompted, setExitPrompted] = useState(false);
   const [isSelectingModel, setIsSelectingModel] = useState(false);
+  const [isFetchingModels, setIsFetchingModels] = useState(false);
+  const [availableModels, setAvailableModels] = useState<ModelListing[]>([]);
   const [isSelectingSession, setIsSelectingSession] = useState(false);
   const [isSelectingSkillTarget, setIsSelectingSkillTarget] = useState(false);
   const [isEnteringSkillName, setIsEnteringSkillName] = useState<{ target: 'local' | 'global' } | null>(null);
@@ -363,11 +401,13 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
   };
 
   useEffect(() => {
-    fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
-    if (messages.length > 0) {
-      fs.writeFileSync(HISTORY_FILE, JSON.stringify({ blocks, messages }, null, 2));
+    if (sessionId) {
+      fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
+      if (messages.length > 0) {
+        fs.writeFileSync(HISTORY_FILE, JSON.stringify({ blocks, messages }, null, 2));
+      }
     }
-  }, [blocks, messages]);
+  }, [blocks, messages, sessionId]);
 
   useInput((input: string, key: any) => {
     if (key.shift && key.tab) {
@@ -435,7 +475,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       return;
     }
 
-    if (!isStreaming && !isSelectingModel && !isSelectingSession && !isSelectingSkillTarget && !isEnteringSkillName) {
+    if (!isStreaming && !isSelectingModel && !isFetchingModels && !isSelectingSession && !isSelectingSkillTarget && !isEnteringSkillName) {
       if (query.startsWith('/')) {
         const filtered = AVAILABLE_COMMANDS.filter(c => c.cmd.startsWith(query.toLowerCase().split(' ')[0]));
         if (key.upArrow) {
@@ -512,7 +552,14 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
             setCurrentModel(args[0]);
             setBlocks((prev: MessageBlock[]) => [...prev, { type: 'assistant', id: crypto.randomUUID(), text: `Model changed to ${args[0]}` }]);
           } else {
-            setIsSelectingModel(true);
+            setIsFetchingModels(true);
+            fetchAvailableModels().then(models => {
+               setAvailableModels(models);
+               setIsFetchingModels(false);
+               setIsSelectingModel(true);
+            }).catch(() => {
+               setIsFetchingModels(false);
+            });
           }
           return;
         } else if (command === '/new') {
@@ -916,9 +963,15 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         </Box>
       )}
 
+      {isFetchingModels && (
+        <Box marginLeft={2} marginTop={1}>
+          <Text color="yellow"><Spinner type="dots" /> Discovering available models across multiple providers...</Text>
+        </Box>
+      )}
+
       {isSelectingModel && (
         <ListPicker
-          items={PARALLAX_MODELS}
+          items={availableModels}
           label="Select an AI Model:"
           onSelect={(m) => { setCurrentModel(m); setIsSelectingModel(false); }}
           onCancel={() => setIsSelectingModel(false)}
@@ -979,7 +1032,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         </Box>
       )}
 
-      {!isStreaming && !isSelectingModel && !isSelectingSession && !isSelectingSkillTarget && !isEnteringSkillName && (
+      {!isStreaming && !isSelectingModel && !isFetchingModels && !isSelectingSession && !isSelectingSkillTarget && !isEnteringSkillName && (
         <Box marginTop={1}>
           <Text color="cyan" bold>❯ </Text>
           <SafeTextInput

@@ -43,6 +43,17 @@ export class VLLMProvider extends GenericProvider {
   }
 }
 
+export class OpenRouterProvider extends GenericProvider {
+  constructor(model: string) {
+    super({
+      name: 'openrouter',
+      model,
+      apiKey: process.env.OPENROUTER_API_KEY,
+      baseURL: 'https://openrouter.ai/api/v1'
+    });
+  }
+}
+
 export class ProviderFactory {
   static create(modelConfigString: string): AgentProvider {
     if (modelConfigString.startsWith('openai:')) {
@@ -58,6 +69,8 @@ export class ProviderFactory {
        return new LMStudioProvider(modelConfigString.substring('lmstudio:'.length));
     } else if (modelConfigString.startsWith('vllm:')) {
        return new VLLMProvider(modelConfigString.substring('vllm:'.length));
+    } else if (modelConfigString.startsWith('openrouter:')) {
+       return new OpenRouterProvider(modelConfigString.substring('openrouter:'.length));
     } else {
        // Default fallback to Gemini
        const model = modelConfigString.startsWith('gemini:') ? modelConfigString.split(':')[1] : modelConfigString;
