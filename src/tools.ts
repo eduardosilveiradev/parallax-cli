@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import crypto from 'node:crypto';
 import * as diff from 'diff';
 import { IdeClient } from '@google/gemini-cli-core';
+import { ProviderFactory } from './agent/provider-factory.js';
 import type { ToolSet, ToolContext } from './agent/types.js';
 import { ToolLoopAgent } from './agent/agent.js';
 import { GeminiProvider } from './agent/gemini-provider.js';
@@ -280,7 +281,7 @@ export const allTools: ToolSet = {
         return { success: false, error: 'Context not provided to subagent tool' };
       }
       try {
-        const subagentProvider = new GeminiProvider(args.model || 'gemini-3-flash-preview');
+        const subagentProvider = ProviderFactory.create(args.model || 'gemini:gemini-3-flash-preview');
         const subagent = new ToolLoopAgent({
           provider: subagentProvider,
           tools: context.tools,

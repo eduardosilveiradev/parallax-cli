@@ -19,6 +19,9 @@ Hitting `Ctrl+C` doesn't just nuke the node process. It explicitly signals an `A
 **Context Compaction**  
 Long-running conversational sessions usually hit token limits or become painfully slow. Type `/compact` and the model summarizes your entire conversation history, clears the old message blocks, and replaces the context window with the summary. You keep the thread alive without dragging around dead weight.
 
+**Omni-Provider Engine**  
+Parallax isn't locked down to a single vendor. While it deeply integrates with Gemini tools for the subagent swarms inherently, the central CLI router natively streams using OpenAI, Anthropic, Ollama, LMStudio, and vLLM without generic middle-man abstractions breaking the tool calling schemas. Access any model quickly using `/model <prefix:model>` (e.g., `/model openai:o3-mini`, `/model anthropic:claude-3-7-sonnet-latest`, `/model ollama:qwen2.5:14b`).
+
 **YOLO Mode & Verbosity**  
 By default, Parallax asks for confirmation before running bash commands or modifying files. If you trust the model with your current task, `Shift+Tab` toggles YOLO mode to bypass confirmations. `Ctrl+O` toggles verbose mode, letting you expand or collapse the noisy reasoning traces and raw tool outputs.
 

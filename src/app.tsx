@@ -10,7 +10,7 @@ import os from 'os';
 import * as diff from 'diff';
 
 import { ToolLoopAgent } from './agent/agent.js';
-import { GeminiProvider } from './agent/gemini-provider.js';
+import { ProviderFactory } from './agent/provider-factory.js';
 import { allTools, activeCommands } from './tools.js';
 import { loadMcpTools } from './mcp.js';
 import { loadWorkspaceSkills, SkillSummary } from './skills.js';
@@ -21,7 +21,19 @@ type AppMode = 'agent' | 'plan' | 'debug';
 
 marked.setOptions({ renderer: new TerminalRenderer() as any });
 
-const MODEL = 'gemini-3-flash-preview';
+const PARALLAX_MODELS = [
+  ...Array.from(VALID_GEMINI_MODELS as Set<string>).map(m => ({ id: `gemini:${m}`, label: `gemini:${m}` })),
+  { id: 'openai:gpt-4o', label: 'openai:gpt-4o' },
+  { id: 'openai:gpt-4o-mini', label: 'openai:gpt-4o-mini' },
+  { id: 'openai:o1', label: 'openai:o1' },
+  { id: 'openai:o3-mini', label: 'openai:o3-mini' },
+  { id: 'anthropic:claude-3-5-sonnet-latest', label: 'anthropic:claude-3-5-sonnet' },
+  { id: 'anthropic:claude-3-7-sonnet-latest', label: 'anthropic:claude-3-7-sonnet' },
+  { id: 'ollama:llama3.3', label: 'ollama:llama3.3' },
+  { id: 'ollama:qwen3:14b', label: 'ollama:qwen3:14b' }
+];
+
+const MODEL = 'gemini:gemini-3-flash-preview';
 
 function getToolLabel(name: string, args: any, status: 'calling' | 'done', result?: any): string {
   const isDone = status === 'done';
@@ -516,7 +528,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
           displayUserText = '/commit';
           sendUserText = "CRITICAL INSTRUCTION: Analyze the changes made in this session. Generate a commit message for the current changes. Afterwards commit with that message and push to origin.";
         } else if (command === '/parallax') {
-          setCurrentModel('gemini-3.1-pro-preview');
+          setCurrentModel('gemini:gemini-3.1-pro-preview');
           const objective = args.join(' ');
           displayUserText = `/parallax ${objective}`;
           sendUserText = `CRITICAL INSTRUCTION: You are the Master Coordinator Agent. Your objective is: "${objective}".\nYou MUST NOT perform simple implementations directly. Instead, break this objective down into smaller tasks and use your \`subagent\` tool to spawn smaller execution agents to perform each sub-task. You MUST spawn all independent subagents concurrently in a SINGLE turn using parallel tool calls. Do not wait for one to finish before starting another unless they have strict dependencies. Coordinate their results and compile the complete solution.`;
@@ -524,7 +536,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
           const prompt = "CRITICAL INSTRUCTION: Provide an in-depth, highly comprehensive summary of our ENTIRE conversation history up to this point. Include all relevant technical context, code paths, goals, and decisions. This summary will be used to replace our entire context window to save tokens, so ensure no critical information is lost.";
           setBlocks((prev: MessageBlock[]) => [...prev, { type: 'user', id: crypto.randomUUID(), text: '/compact' }, { type: 'assistant', id: crypto.randomUUID(), text: '' }]);
 
-          const provider = new GeminiProvider(currentModel);
+          const provider = ProviderFactory.create(currentModel);
           const newMessages = [...messages, provider.createUserMessage(prompt)];
           setMessages(newMessages); // Set temporarily so stream can evaluate it
           setIsStreaming(true);
@@ -624,7 +636,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
 
       setBlocks((prev: MessageBlock[]) => [...prev, { type: 'user', id: crypto.randomUUID(), text: displayUserText }]);
 
-      const provider = new GeminiProvider(currentModel);
+      const provider = ProviderFactory.create(currentModel);
 
       let sysInstruct = `You are a coding assistant.\nAlways respond in the users language.\nAlways use tools proactively.\nWhen reading/listing files do NOT use bash commands. USE YOUR TOOLS.\nYou are in a terminal environment, not a GUI, this means you should avoid markdown at all costs.`;
 
@@ -906,9 +918,8 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
 
       {isSelectingModel && (
         <ListPicker
-          items={Array.from(VALID_GEMINI_MODELS as Set<string>)
-            .map((m) => ({ id: m, label: m }))}
-          label="Select a Gemini Model:"
+          items={PARALLAX_MODELS}
+          label="Select an AI Model:"
           onSelect={(m) => { setCurrentModel(m); setIsSelectingModel(false); }}
           onCancel={() => setIsSelectingModel(false)}
         />
