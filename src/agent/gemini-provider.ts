@@ -140,6 +140,10 @@ export class GeminiProvider implements AgentProvider {
     delete cleaned.$defs;
     delete cleaned.definitions;
     delete cleaned.additionalProperties; 
+    delete cleaned.exclusiveMaximum;
+    delete cleaned.exclusiveMinimum;
+    delete cleaned.anyOf;
+    delete cleaned.oneOf;
     
     if (cleaned.properties && typeof cleaned.properties === 'object') {
       const cls: any = {};

@@ -17,15 +17,39 @@ interface McpConfig {
 
 const CONFIG_PATH = path.join(os.homedir(), ".parallax", "mcp-config.json");
 
+const DEFAULT_CONFIG: McpConfig = {
+  mcpServers: {
+    git: {
+      command: "uvx",
+      args: ["mcp-server-git", "--repository", process.cwd()],
+    },
+    fetch: {
+      command: "uvx",
+      args: ["mcp-server-fetch"],
+    }
+  }
+};
+
 export async function loadMcpTools(): Promise<ToolSet> {
-  if (!fs.existsSync(CONFIG_PATH)) {
-    return {};
+  let config: McpConfig = DEFAULT_CONFIG;
+
+  if (fs.existsSync(CONFIG_PATH)) {
+    try {
+      const userConfig: McpConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+      config = {
+        mcpServers: {
+          ...DEFAULT_CONFIG.mcpServers,
+          ...(userConfig.mcpServers || {}),
+        },
+      };
+    } catch (err) {
+      console.error("Failed to load MCP config:", err);
+    }
   }
 
-  try {
-    const config: McpConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
-    const allMcpTools: ToolSet = {};
+  const allMcpTools: ToolSet = {};
 
+  try {
     for (const [serverName, serverConfig] of Object.entries(config.mcpServers)) {
       try {
         const transport = new StdioClientTransport({

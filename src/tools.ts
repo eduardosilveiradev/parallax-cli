@@ -9,6 +9,7 @@ import { ProviderFactory } from './agent/provider-factory.js';
 import type { ToolSet, ToolContext } from './agent/types.js';
 import { ToolLoopAgent } from './agent/agent.js';
 import { GeminiProvider } from './agent/gemini-provider.js';
+import { threadedSearch } from './agent/fast-search.js';
 
 const execAsync = promisify(exec);
 
@@ -37,6 +38,132 @@ export interface RunningCommand {
 export const activeCommands = new Map<string, RunningCommand>();
 
 export const allTools: ToolSet = {
+  editJson: {
+    description: 'Safely parse, modify, and overwrite JSON files iteratively using direct key paths without manually text replacing blocks. Target must be a valid JSON file. Path should be dot-delimited (e.g. "scripts.build"). If you intend to delete a key, leave operation as "delete". Ensure your JSON injection values are structurally valid parameters.',
+    requiresConfirmation: true,
+    parameters: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path to the json file' },
+        keyPath: { type: 'string', description: 'Dot-delimited path of the key to mutate' },
+        operation: { type: 'string', description: '"set" or "delete"' },
+        value: { type: 'string', description: 'Stringified JSON value to set if operation is "set"' }
+      },
+      required: ['path', 'keyPath', 'operation']
+    },
+    execute: async (args: any) => {
+      try {
+        const fullPath = path.resolve(args.path);
+        if (!fs.existsSync(fullPath)) return { success: false, error: `File not found at ${fullPath}` };
+
+        const content = fs.readFileSync(fullPath, 'utf8');
+        const json = JSON.parse(content);
+        const keys = args.keyPath.split('.');
+        
+        let current = json;
+        for (let i = 0; i < keys.length - 1; i++) {
+          if (!current[keys[i]]) current[keys[i]] = {};
+          current = current[keys[i]];
+        }
+        
+        const finalKey = keys[keys.length - 1];
+        if (args.operation === 'delete') {
+          delete current[finalKey];
+        } else {
+          current[finalKey] = JSON.parse(args.value);
+        }
+
+        fs.writeFileSync(fullPath, JSON.stringify(json, null, 2));
+        return { success: true, msg: `JSON mutated successfully at ${args.keyPath}` };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    }
+  },
+  searchCodebase: {
+    description: 'Fast concurrent worker-threaded codebase search traversing all files internally without needing ripgrep installed locally. Best for finding references, tokens, or variables globally.',
+    parameters: {
+      type: 'object',
+      properties: {
+        directory: { type: 'string' },
+        pattern: { type: 'string' },
+        isRegex: { type: 'boolean' },
+        caseSensitive: { type: 'boolean' }
+      },
+      required: ['directory', 'pattern']
+    },
+    execute: async (args: any) => {
+      try {
+        const fullPath = path.resolve(args.directory);
+        const MAX_RESULTS = 250;
+        const matches = await threadedSearch(fullPath, args.pattern, {
+           isRegex: !!args.isRegex,
+           caseSensitive: !!args.caseSensitive,
+           maxResults: MAX_RESULTS
+        });
+        return { 
+           success: true, 
+           matchesFound: matches.length,
+           truncated: matches.length === MAX_RESULTS,
+           matches 
+        };
+      } catch (err: any) {
+        return { success: false, error: err.message };
+      }
+    }
+  },
+  readClipboard: {
+    description: 'Natively retrieves the text payload currently locked inside the host users operating system clipboard queue.',
+    parameters: { type: 'object', properties: {} },
+    execute: async () => {
+      try {
+        let command = '';
+        if (process.platform === 'darwin') {
+          command = 'pbpaste';
+        } else if (process.platform === 'linux') {
+          command = 'xclip -selection clipboard -o || xsel --clipboard --output';
+        } else if (process.platform === 'win32') {
+          command = 'powershell.exe -command "Get-Clipboard"';
+        } else {
+          return { success: false, error: 'Unsupported clipboard OS platform' };
+        }
+        
+        const { stdout } = await execAsync(command);
+        return { success: true, clipboardText: stdout };
+      } catch (err: any) {
+        return { success: false, error: 'Clipboard extraction failed: ' + err.message };
+      }
+    }
+  },
+  writeClipboard: {
+    description: 'Injects an arbitrary string buffer directly into the host users OS clipboard queue natively.',
+    requiresConfirmation: true,
+    parameters: { 
+      type: 'object', 
+      properties: { text: { type: 'string' } },
+      required: ['text'] 
+    },
+    execute: async (args: any) => {
+      try {
+        let runner;
+        if (process.platform === 'darwin') {
+          runner = spawn('pbcopy');
+        } else if (process.platform === 'linux') {
+          runner = spawn('xclip', ['-selection', 'clipboard']);
+        } else if (process.platform === 'win32') {
+          runner = spawn('clip');
+        } else {
+          return { success: false, error: 'Unsupported clipboard OS platform' };
+        }
+        
+        runner.stdin.write(args.text);
+        runner.stdin.end();
+        return { success: true, msg: 'Clipboard buffer successfully replaced' };
+      } catch (err: any) {
+        return { success: false, error: 'Clipboard injection failed: ' + err.message };
+      }
+    }
+  },
   listDirectory: {
     description: 'List contents of a directory',
     parameters: {
