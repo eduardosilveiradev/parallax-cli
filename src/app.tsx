@@ -53,7 +53,7 @@ function getToolLabel(name: string, args: any, status: 'calling' | 'done', resul
     case 'runCommand':
       return isDone ? `Ran ${args.command}` : `Running ${args.command}`;
     case 'subagent':
-      return isDone ? `Subagent finished` : `Spawning subagent`;
+      return isDone ? `Subagent finished` : `Running subagent`;
     case 'checkCommandStatus':
       return isDone ? `Checked command ${args.commandId}` : `Checking command ${args.commandId}`;
     default:
@@ -157,7 +157,8 @@ const AVAILABLE_COMMANDS = [
   { cmd: '/compact', desc: 'Summarize and compress conversation history to save tokens' },
   { cmd: '/load', desc: 'Loads or switches to a historical session memory' },
   { cmd: '/skills', desc: 'Install new agent skills from skills.sh locally or globally' },
-  { cmd: '/commit', desc: 'Creates a commit with the current changes (model generated message)' }
+  { cmd: '/commit', desc: 'Creates a commit with the current changes (model generated message), then pushes.' },
+  { cmd: '/parallax', desc: 'Spawns a Master Coordinator Agent to orchestrate subagents for a large task' }
 ];
 
 function ListPicker({ items, label, onSelect, onCancel }: { items: { id: string; label: string; detail?: string }[], label: string, onSelect: (m: string) => void, onCancel: () => void }) {
@@ -514,6 +515,11 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         } else if (command === '/commit') {
           displayUserText = '/commit';
           sendUserText = "CRITICAL INSTRUCTION: Analyze the changes made in this session. Generate a commit message for the current changes. Afterwards commit with that message and push to origin.";
+        } else if (command === '/parallax') {
+          setCurrentModel('gemini-3.1-pro-preview');
+          const objective = args.join(' ');
+          displayUserText = `/parallax ${objective}`;
+          sendUserText = `CRITICAL INSTRUCTION: You are the Master Coordinator Agent. Your objective is: "${objective}".\nYou MUST NOT perform simple implementations directly. Instead, break this objective down into smaller tasks and use your \`subagent\` tool to spawn smaller execution agents to perform each sub-task. You MUST spawn all independent subagents concurrently in a SINGLE turn using parallel tool calls. Do not wait for one to finish before starting another unless they have strict dependencies. Coordinate their results and compile the complete solution.`;
         } else if (command === '/compact') {
           const prompt = "CRITICAL INSTRUCTION: Provide an in-depth, highly comprehensive summary of our ENTIRE conversation history up to this point. Include all relevant technical context, code paths, goals, and decisions. This summary will be used to replace our entire context window to save tokens, so ensure no critical information is lost.";
           setBlocks((prev: MessageBlock[]) => [...prev, { type: 'user', id: crypto.randomUUID(), text: '/compact' }, { type: 'assistant', id: crypto.randomUUID(), text: '' }]);
@@ -817,10 +823,15 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
                     ? <Text color="red">✖ </Text>
                     : <Text color="green">✔ </Text>}
                 <Text color="cyan">{getToolLabel(tc.name, tc.args, tc.status as any, tc.result)}</Text>
-                {tc.status === 'done' && tc.result !== undefined && typeof tc.result === 'object' && (tc.result as any).success !== false && toolsExpanded && tc.name !== 'editFile' && (
-                  <Box marginLeft={2}><Text dimColor wrap="truncate-end">→ {JSON.stringify(tc.result).slice(0, 100)}</Text></Box>
-                )}
               </Box>
+              {toolsExpanded && (
+                <Box marginLeft={4} flexDirection="column" marginTop={0}>
+                  <Text dimColor wrap="truncate-end">Args: {JSON.stringify(tc.args).slice(0, 300)}</Text>
+                  {tc.status === 'done' && tc.result !== undefined && typeof tc.result === 'object' && (tc.result as any).success !== false && tc.name !== 'editFile' && (
+                    <Text dimColor wrap="truncate-end">Output: {JSON.stringify(tc.result).slice(0, 300)}</Text>
+                  )}
+                </Box>
+              )}
               {tc.status === 'done' && tc.result && typeof tc.result === 'object' && (tc.result as any).success === false ? (
                 <Box marginLeft={4} flexDirection="column" marginTop={0}>
                   <Text color="red">Error: {String((tc.result as any).error || 'Unknown failure')}</Text>

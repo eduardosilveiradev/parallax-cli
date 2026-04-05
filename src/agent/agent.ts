@@ -44,10 +44,11 @@ export class ToolLoopAgent {
       }
 
       if (currentTools.length > 0) {
-        const toolResults = [];
-        for (const tc of currentTools) {
+        const executePromises = [];
+
+        for (let i = 0; i < currentTools.length; i++) {
+          const tc = currentTools[i];
           const toolDef = this.tools?.[tc.name];
-          let output;
           if (toolDef) {
             const context: ToolContext = {
               provider: this.provider,
@@ -55,25 +56,48 @@ export class ToolLoopAgent {
               onConfirm: this.onConfirm
             };
 
+            let executionPromise: Promise<any>;
             if (toolDef.requiresConfirmation && this.onConfirm) {
               const approved = await this.onConfirm({ id: tc.id, name: tc.name, input: tc.input });
               if (!approved) {
-                output = { error: 'The user manually rejected/cancelled the execution of this tool.' };
+                executionPromise = Promise.resolve({ error: 'The user manually rejected/cancelled the execution of this tool.' });
               } else {
-                output = await toolDef.execute(tc.input, context);
+                executionPromise = Promise.resolve().then(() => toolDef.execute(tc.input, context));
               }
             } else {
-              output = await toolDef.execute(tc.input, context);
+              executionPromise = Promise.resolve().then(() => toolDef.execute(tc.input, context));
             }
+            
+            executePromises.push(
+               executionPromise
+                 .then(output => ({ tc, output, index: i }))
+                 .catch(err => ({ tc, output: { error: err.message || String(err) }, index: i }))
+            );
           } else {
-            output = { error: `Tool ${tc.name} not found` };
+            executePromises.push(Promise.resolve({ tc, output: { error: `Tool ${tc.name} not found` }, index: i }));
           }
-          yield { type: 'tool-result', toolCallId: tc.id, output };
-          toolResults.push(this.provider.createToolResultMessage(tc.id, tc.name, output));
         }
 
-        const mergedParts = toolResults.flatMap(tr => tr.parts);
-        messages.push({ role: 'user', parts: mergedParts });
+        const finalToolParts = new Array(currentTools.length);
+        const pendingWrappers = new Set<Promise<any>>();
+        
+        for (const p of executePromises) {
+           const wrapper = p.then(res => {
+              pendingWrappers.delete(wrapper);
+              return res;
+           });
+           pendingWrappers.add(wrapper);
+        }
+
+        while (pendingWrappers.size > 0) {
+          const res = await Promise.race(pendingWrappers);
+          yield { type: 'tool-result', toolCallId: res.tc.id, output: res.output };
+          
+          const toolResultMsg = this.provider.createToolResultMessage(res.tc.id, res.tc.name, res.output);
+          finalToolParts[res.index] = toolResultMsg.parts[0];
+        }
+
+        messages.push({ role: 'user', parts: finalToolParts });
         yield { type: 'finish-step', reason: 'tool-calls' };
         continue;
       }

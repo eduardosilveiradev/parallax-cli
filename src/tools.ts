@@ -7,6 +7,7 @@ import * as diff from 'diff';
 import { IdeClient } from '@google/gemini-cli-core';
 import type { ToolSet, ToolContext } from './agent/types.js';
 import { ToolLoopAgent } from './agent/agent.js';
+import { GeminiProvider } from './agent/gemini-provider.js';
 
 const execAsync = promisify(exec);
 
@@ -269,7 +270,8 @@ export const allTools: ToolSet = {
       type: 'object',
       properties: {
         prompt: { type: 'string', description: 'The task to perform' },
-        systemInstruction: { type: 'string', description: 'Optional system instruction for the subagent' }
+        systemInstruction: { type: 'string', description: 'Optional system instruction for the subagent' },
+        model: { type: 'string', description: 'Optional explicit model name to use, e.g. gemini-3-flash-preview. Leave blank for default.' }
       },
       required: ['prompt']
     },
@@ -278,10 +280,11 @@ export const allTools: ToolSet = {
         return { success: false, error: 'Context not provided to subagent tool' };
       }
       try {
+        const subagentProvider = new GeminiProvider(args.model || 'gemini-3-flash-preview');
         const subagent = new ToolLoopAgent({
-          provider: context.provider,
+          provider: subagentProvider,
           tools: context.tools,
-          systemInstruction: args.systemInstruction || 'You are a subagent helping a main agent with a task.',
+          systemInstruction: args.systemInstruction || 'You are a subagent helping a main agent with a task. Be concise and precise.',
           onConfirm: context.onConfirm
         });
 
