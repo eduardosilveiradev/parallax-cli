@@ -13,7 +13,8 @@ import { ToolLoopAgent } from './agent/agent.js';
 import { GeminiProvider } from './agent/gemini-provider.js';
 import { allTools, activeCommands } from './tools.js';
 import { loadMcpTools } from './mcp.js';
-import type { MessageBlock, ToolCallInfo, ToolSet } from './agent/types.js';
+import { loadWorkspaceSkills, SkillSummary } from './skills.js';
+import type { MessageBlock, ToolCallInfo, ToolSet, ToolDefinition } from './agent/types.js';
 import { VALID_GEMINI_MODELS } from '@google/gemini-cli-core';
 
 type AppMode = 'agent' | 'plan' | 'debug';
@@ -155,6 +156,7 @@ const AVAILABLE_COMMANDS = [
   { cmd: '/init', desc: 'Analyze codebase and create PARALLAX.md' },
   { cmd: '/compact', desc: 'Summarize and compress conversation history to save tokens' },
   { cmd: '/load', desc: 'Loads or switches to a historical session memory' },
+  { cmd: '/skills', desc: 'Install new agent skills from skills.sh locally or globally' },
   { cmd: '/commit', desc: 'Creates a commit with the current changes (model generated message)' }
 ];
 
@@ -202,7 +204,7 @@ function ListPicker({ items, label, onSelect, onCancel }: { items: { id: string;
   );
 }
 
-function SafeTextInput({ value, onChange, onSubmit }: { value: string, onChange: (v: string) => void, onSubmit: (v: string) => void }) {
+function SafeTextInput({ value, onChange, onSubmit, onCancel }: { value: string, onChange: (v: string) => void, onSubmit: (v: string) => void, onCancel?: () => void }) {
   const [cursor, setCursor] = useState(value.length);
 
   useEffect(() => {
@@ -211,7 +213,11 @@ function SafeTextInput({ value, onChange, onSubmit }: { value: string, onChange:
 
   useInput((input, key) => {
     if (key.upArrow || key.downArrow || key.tab || (key.shift && key.tab)) return;
-    if (key.ctrl || key.meta || key.escape) return;
+    if (key.ctrl || key.meta) return;
+    if (key.escape) {
+      if (onCancel) onCancel();
+      return;
+    }
     if (key.return) {
       onSubmit(value);
       return;
@@ -262,6 +268,9 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
   const [exitPrompted, setExitPrompted] = useState(false);
   const [isSelectingModel, setIsSelectingModel] = useState(false);
   const [isSelectingSession, setIsSelectingSession] = useState(false);
+  const [isSelectingSkillTarget, setIsSelectingSkillTarget] = useState(false);
+  const [isEnteringSkillName, setIsEnteringSkillName] = useState<{ target: 'local' | 'global' } | null>(null);
+  const [skillNameInput, setSkillNameInput] = useState('');
   const [availableSessions, setAvailableSessions] = useState<{ id: string; label: string; detail?: string }[]>([]);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
   const [commandIndex, setCommandIndex] = useState(0);
@@ -271,10 +280,29 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
   useEffect(() => { yoloModeRef.current = yoloMode; }, [yoloMode]);
   const [pendingConfirm, setPendingConfirm] = useState<{ id: string; name: string; input: any; resolve: (b: boolean) => void } | null>(null);
   const [combinedTools, setCombinedTools] = useState<ToolSet>(allTools);
+  const [skills, setSkills] = useState<SkillSummary[]>([]);
 
   useEffect(() => {
+    const wsSkills = loadWorkspaceSkills(process.cwd());
+    setSkills(wsSkills);
+
+    const loadSkillTool: ToolDefinition = {
+      description: 'Load the full contents of a SKILL.md file for a specific skill. Call this if you need to read the full instructions for an advertised skill.',
+      requiresConfirmation: false,
+      parameters: {
+        type: 'object',
+        properties: { name: { type: 'string', description: 'Name of the skill to load' } },
+        required: ['name']
+      },
+      execute: async (args: any) => {
+        const skill = wsSkills.find(s => s.name === args.name);
+        if (!skill) return { error: `Skill ${args.name} not found.` };
+        return { content: fs.readFileSync(skill.filePath, 'utf8') };
+      }
+    };
+
     loadMcpTools().then(mcpTools => {
-      setCombinedTools(prev => ({ ...prev, ...mcpTools }));
+      setCombinedTools(prev => ({ ...prev, loadSkill: loadSkillTool, ...mcpTools }));
     });
   }, []);
 
@@ -394,7 +422,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       return;
     }
 
-    if (!isStreaming && !isSelectingModel && !isSelectingSession) {
+    if (!isStreaming && !isSelectingModel && !isSelectingSession && !isSelectingSkillTarget && !isEnteringSkillName) {
       if (query.startsWith('/')) {
         const filtered = AVAILABLE_COMMANDS.filter(c => c.cmd.startsWith(query.toLowerCase().split(' ')[0]));
         if (key.upArrow) {
@@ -568,6 +596,16 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
           }
           loadSession(args[0]);
           return;
+        } else if (command === '/skills') {
+          setIsSelectingSkillTarget(true);
+          return;
+        } else if (command === '/skills-install') {
+          const target = args[0] || 'local';
+          const skillStr = args.slice(1).join('').replace(/\s+/g, '').trim();
+          const targetDir = target === 'global' ? path.join(os.homedir(), '.agents') : path.join(process.cwd(), '.agents');
+
+          displayUserText = `/skills add ${skillStr} (${target})`;
+          sendUserText = `CRITICAL INSTRUCTION: You must run the following bash command using your tool to install a skill for the user:\n\`\`\`bash\nnpx skills add -y "${skillStr}"\n\`\`\`\nDo not ask for confirmation, just run it.`;
         } else if (command === '/help') {
           const helpText = AVAILABLE_COMMANDS.map(c => `**${c.cmd}** - ${c.desc}`).join('\n');
           setBlocks((prev: MessageBlock[]) => [...prev, { type: 'assistant', id: crypto.randomUUID(), text: helpText }]);
@@ -583,6 +621,19 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       const provider = new GeminiProvider(currentModel);
 
       let sysInstruct = `You are a coding assistant.\nAlways respond in the users language.\nAlways use tools proactively.\nWhen reading/listing files do NOT use bash commands. USE YOUR TOOLS.\nYou are in a terminal environment, not a GUI, this means you should avoid markdown at all costs.`;
+
+      const parallaxMdPath = path.join(process.cwd(), 'PARALLAX.md');
+      if (fs.existsSync(parallaxMdPath)) {
+        sysInstruct += `\n\n# Project Architecture (PARALLAX.md)\n${fs.readFileSync(parallaxMdPath, 'utf8')}`;
+      }
+
+      if (skills.length > 0) {
+        sysInstruct += `\n\n# Available Skills\nYou have access to the following specialized skills. To use them, call the \`loadSkill\` tool with the name of the skill to retrieve its full instructions.\n`;
+        for (const skill of skills) {
+          sysInstruct += `\n${skill.frontmatter}\n`;
+        }
+      }
+
       if (mode === 'plan') {
         sysInstruct = `You are a planner. Before writing any code or taking actions, write a comprehensive plan.\n${sysInstruct}`;
       } else if (mode === 'debug') {
@@ -626,7 +677,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
                 thinkingBlockIndex = updated.length;
                 updated.push({ type: 'thinking', id: crypto.randomUUID(), text: currentThinking, startTime: Date.now() });
               } else {
-                (updated[thinkingBlockIndex] as any).text = currentThinking;
+                updated[thinkingBlockIndex] = { ...(updated[thinkingBlockIndex] as any), text: currentThinking } as any;
               }
               return updated;
             });
@@ -636,13 +687,13 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
             setBlocks((prev) => {
               let updated = [...prev];
               if (thinkingBlockIndex !== -1 && !(updated[thinkingBlockIndex] as any).endTime) {
-                (updated[thinkingBlockIndex] as any).endTime = Date.now();
+                updated[thinkingBlockIndex] = { ...(updated[thinkingBlockIndex] as any), endTime: Date.now() } as any;
               }
               if (assistantBlockIndex === -1) {
                 assistantBlockIndex = updated.length;
                 updated.push({ type: 'assistant', id: crypto.randomUUID(), text: currentText });
               } else {
-                (updated[assistantBlockIndex] as any).text = currentText;
+                updated[assistantBlockIndex] = { ...(updated[assistantBlockIndex] as any), text: currentText } as any;
               }
               return updated;
             });
@@ -656,7 +707,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
             setBlocks((prev) => {
               let updated = [...prev];
               if (thinkingBlockIndex !== -1 && !(updated[thinkingBlockIndex] as any).endTime) {
-                (updated[thinkingBlockIndex] as any).endTime = Date.now();
+                updated[thinkingBlockIndex] = { ...(updated[thinkingBlockIndex] as any), endTime: Date.now() } as any;
               }
               updated.push({ type: 'tool-call', id: tc.id, call: tc });
               return updated;
@@ -677,7 +728,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
             setBlocks((prev) => {
               let updated = [...prev];
               if (thinkingBlockIndex !== -1 && !(updated[thinkingBlockIndex] as any).endTime) {
-                (updated[thinkingBlockIndex] as any).endTime = Date.now();
+                updated[thinkingBlockIndex] = { ...(updated[thinkingBlockIndex] as any), endTime: Date.now() } as any;
               }
               return updated;
             });
@@ -725,7 +776,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
           ) : (
             <Text>💭 Thinking (<Timer startTime={(block as any).startTime} />)</Text>
           );
-          
+
           return (
             <Box key={key} marginLeft={2} flexDirection="column">
               <Text color="magenta" dimColor>
@@ -772,7 +823,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
               </Box>
               {tc.status === 'done' && tc.result && typeof tc.result === 'object' && (tc.result as any).success === false ? (
                 <Box marginLeft={4} flexDirection="column" marginTop={0}>
-                   <Text color="red">Error: {String((tc.result as any).error || 'Unknown failure')}</Text>
+                  <Text color="red">Error: {String((tc.result as any).error || 'Unknown failure')}</Text>
                 </Box>
               ) : null}
               {diffLines && typeof tc.result === 'object' && (tc.result as any).success !== false ? (
@@ -862,7 +913,52 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         />
       )}
 
-      {!isStreaming && !isSelectingModel && !isSelectingSession && (
+      {isSelectingSkillTarget && (
+        <ListPicker
+          label="Where should the skill be installed?"
+          items={[{ id: 'local', label: 'Local Workspace', detail: 'Installs to .agents/ in the current directory' }, { id: 'global', label: 'Global Profile', detail: 'Installs to ~/.agents/ for all projects' }]}
+          onSelect={(id) => {
+            setIsSelectingSkillTarget(false);
+            setIsEnteringSkillName({ target: id as 'local' | 'global' });
+          }}
+          onCancel={() => setIsSelectingSkillTarget(false)}
+        />
+      )}
+
+      {isEnteringSkillName && (
+        <Box flexDirection="column" marginTop={1} marginLeft={2}>
+          <Text color="magenta" bold>Enter skill name to install (e.g., vercel-labs/agent-skills):</Text>
+          <Box marginLeft={2} flexDirection="row">
+            <Text color="green">❯ </Text>
+            <SafeTextInput
+              value={skillNameInput}
+              onChange={setSkillNameInput}
+              onCancel={() => {
+                setIsEnteringSkillName(null);
+                setSkillNameInput('');
+              }}
+              onSubmit={(val) => {
+                const cleaned = val.trim();
+                if (!cleaned) {
+                  setIsEnteringSkillName(null);
+                  setSkillNameInput('');
+                  return;
+                }
+                const targetName = isEnteringSkillName.target;
+                setIsEnteringSkillName(null);
+                setSkillNameInput('');
+
+                handleSubmit(`/skills-install ${targetName} ${cleaned}`);
+              }}
+            />
+          </Box>
+          <Box marginTop={1}>
+            <Text dimColor>Press Enter to submit, or Esc to cancel.</Text>
+          </Box>
+        </Box>
+      )}
+
+      {!isStreaming && !isSelectingModel && !isSelectingSession && !isSelectingSkillTarget && !isEnteringSkillName && (
         <Box marginTop={1}>
           <Text color="cyan" bold>❯ </Text>
           <SafeTextInput

@@ -4,10 +4,27 @@ import { exec, spawn, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import crypto from 'node:crypto';
 import * as diff from 'diff';
+import { IdeClient } from '@google/gemini-cli-core';
 import type { ToolSet, ToolContext } from './agent/types.js';
 import { ToolLoopAgent } from './agent/agent.js';
 
 const execAsync = promisify(exec);
+
+let ideClientInstance: IdeClient | null = null;
+let ideClientInitAttempted = false;
+
+async function getConnectedIdeClient(): Promise<IdeClient | null> {
+  if (!ideClientInitAttempted) {
+    ideClientInitAttempted = true;
+    try {
+      ideClientInstance = await IdeClient.getInstance();
+      await ideClientInstance.connect({ logToConsole: false });
+    } catch (err) {
+      ideClientInstance = null;
+    }
+  }
+  return ideClientInstance;
+}
 
 export interface RunningCommand {
   id: string;
@@ -68,6 +85,7 @@ export const allTools: ToolSet = {
       try {
         const fullPath = path.resolve(args.path);
         fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+        
         fs.writeFileSync(fullPath, args.content);
         return { success: true, path: fullPath, bytesWritten: Buffer.byteLength(args.content) };
       } catch (err: any) {
@@ -104,6 +122,17 @@ export const allTools: ToolSet = {
         
         const newContent = content.replace(args.oldText, args.newText);
         const diffPatch = diff.createPatch(args.path, content, newContent);
+        
+        const client = await getConnectedIdeClient();
+        if (client && client.isDiffingEnabled()) {
+          client.openDiff(fullPath, newContent).then(res => {
+             if (res.status === 'accepted' && res.content !== undefined && res.content !== newContent) {
+                fs.writeFileSync(fullPath, res.content);
+             }
+          }).catch(() => {});
+          await new Promise(r => setTimeout(r, 150));
+        }
+        
         fs.writeFileSync(fullPath, newContent);
         return { success: true, path: fullPath, message: 'File successfully edited.', diff: diffPatch };
       } catch (err: any) {
