@@ -158,6 +158,8 @@ const AVAILABLE_COMMANDS = [
   { cmd: '/load', desc: 'Loads or switches to a historical session memory' },
   { cmd: '/skills', desc: 'Install new agent skills from skills.sh locally or globally' },
   { cmd: '/commit', desc: 'Creates a commit with the current changes (model generated message), then pushes.' },
+  { cmd: '/commit:pr', desc: 'Creates a commit, pushes, and uses the GitHub CLI to open a pull request.' },
+  { cmd: '/commit:no-push', desc: 'Creates a commit with the current changes without pushing.' },
   { cmd: '/parallax', desc: 'Spawns a Master Coordinator Agent to orchestrate subagents for a large task' }
 ];
 
@@ -571,9 +573,15 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         } else if (command === '/init') {
           displayUserText = '/init';
           sendUserText = "CRITICAL INSTRUCTION: Analyze the entire codebase in the current directory. Generate a 70-120 line comprehensive description of the codebase including architectural details, and write it to 'PARALLAX.md'. This file will be used as the agent's system prompt on subsequent initializations.";
-        } else if (command === '/commit') {
-          displayUserText = '/commit';
-          sendUserText = "CRITICAL INSTRUCTION: Analyze the changes made in this session. Generate a commit message for the current changes. Afterwards commit with that message and push to origin.";
+        } else if (command === '/commit' || command === '/commit:pr' || command === '/commit:no-push') {
+          displayUserText = command;
+          if (command === '/commit:pr') {
+            sendUserText = "CRITICAL INSTRUCTION: Analyze the changes made in this session. Generate a commit message and commit them locally. To open a PR, check if the user has push access to origin. If they do not, use the GitHub CLI to autonomously fork the repository and push to the fork instead. Finally, use `gh pr create --fill` to submit the Pull Request. Ensure all `gh` commands are run non-interactively to prevent terminal hanging.";
+          } else if (command === '/commit:no-push') {
+            sendUserText = "CRITICAL INSTRUCTION: Analyze the changes made in this session. Generate a commit message for the current changes and commit them locally. Do NOT push to origin.";
+          } else {
+            sendUserText = "CRITICAL INSTRUCTION: Analyze the changes made in this session. Generate a commit message for the current changes. Afterwards commit with that message and push to origin.";
+          }
         } else if (command === '/parallax') {
           setCurrentModel('gemini:gemini-3.1-pro-preview');
           const objective = args.join(' ');
