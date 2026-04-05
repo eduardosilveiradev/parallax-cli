@@ -52,4 +52,4 @@ Agent tools go in `src/tools.ts`. Make sure the JSON schema and the handler retu
 
 - Check if there's an open issue first.
 - Branch off `main`.
-- If you're bored, run the `/commit` command to have Parallax automatically analyze your local diff and write the commit message for you.
+- If you're bored, run the `/commit:pr` command to have Parallax automatically analyze your local diff and push to a PR for you..
