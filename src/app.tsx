@@ -896,7 +896,6 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
       {isSelectingModel && (
         <ListPicker
           items={Array.from(VALID_GEMINI_MODELS as Set<string>)
-            .filter((m) => !m.includes('3.1') && !m.includes('2.5'))
             .map((m) => ({ id: m, label: m }))}
           label="Select a Gemini Model:"
           onSelect={(m) => { setCurrentModel(m); setIsSelectingModel(false); }}
