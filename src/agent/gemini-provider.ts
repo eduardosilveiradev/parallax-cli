@@ -107,6 +107,7 @@ export class GeminiProvider implements AgentProvider {
       parts: [
         {
           functionResponse: {
+            id: toolCallId,
             name: toolName,
             response: resultValue
           }

@@ -82,15 +82,14 @@ export class ToolLoopAgent {
         const pendingWrappers = new Set<Promise<any>>();
         
         for (const p of executePromises) {
-           const wrapper = p.then(res => {
-              pendingWrappers.delete(wrapper);
-              return res;
-           });
+           const wrapper: Promise<any> = p.then(res => ({ wrapper, res }));
            pendingWrappers.add(wrapper);
         }
 
         while (pendingWrappers.size > 0) {
-          const res = await Promise.race(pendingWrappers);
+          const { wrapper, res } = await Promise.race(pendingWrappers);
+          pendingWrappers.delete(wrapper);
+
           yield { type: 'tool-result', toolCallId: res.tc.id, output: res.output };
           
           const toolResultMsg = this.provider.createToolResultMessage(res.tc.id, res.tc.name, res.output);
