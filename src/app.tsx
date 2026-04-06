@@ -838,37 +838,30 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         <Text dimColor>Type a message to start.</Text>
       </Box>
 
-      {blocks.map((block: MessageBlock, i: number) => {
-        const key = block.id || i;
-        if (block.type === 'user') return <Box key={key}><Text color="green" bold>❯ </Text><Text>{block.text}</Text></Box>;
-        if (block.type === 'error') return <Box key={key}><Text color="red">✖ Error: {block.text}</Text></Box>;
-        if (block.type === 'thinking') {
-          const isExpanded = toolsExpanded;
-          const thinkingText = (block as any).endTime ? (
-            <Text>💭 Thought for <Timer startTime={(block as any).startTime} endTime={(block as any).endTime} /></Text>
-          ) : (
-            <Text>💭 Thinking (<Timer startTime={(block as any).startTime} />)</Text>
-          );
+      {(() => {
+        const groupedBlocks: any[] = [];
+        let currentGroup: any[] = [];
+        for (let i = 0; i < blocks.length; i++) {
+          const b = blocks[i];
+          if (b.type === 'tool-call') {
+            currentGroup.push(b);
+          } else {
+            if (currentGroup.length > 1) {
+              groupedBlocks.push({ type: 'tool-group', id: currentGroup[0].id + '-group', calls: currentGroup });
+            } else if (currentGroup.length === 1) {
+              groupedBlocks.push(currentGroup[0]);
+            }
+            currentGroup = [];
+            groupedBlocks.push(b);
+          }
+        }
+        if (currentGroup.length > 1) {
+          groupedBlocks.push({ type: 'tool-group', id: currentGroup[0].id + '-group', calls: currentGroup });
+        } else if (currentGroup.length === 1) {
+          groupedBlocks.push(currentGroup[0]);
+        }
 
-          return (
-            <Box key={key} marginLeft={2} flexDirection="column">
-              <Text color="magenta" dimColor>
-                {thinkingText} {!isExpanded && <Text>(Ctrl+O to expand)</Text>}
-              </Text>
-              <Box marginLeft={2}>
-                {isExpanded ? (
-                  <Text dimColor>{block.text}</Text>
-                ) : (
-                  <Text dimColor wrap="truncate-end">{block.text.replace(/\\s+/g, ' ').trim()}</Text>
-                )}
-              </Box>
-            </Box>
-          );
-        }
-        if (block.type === 'assistant') {
-          return <Box key={key} marginLeft={2}><Text>{(marked.parse(block.text) as string).trim() || block.text}</Text></Box>;
-        }
-        if (block.type === 'tool-call') {
+        const renderToolCall = (block: any, key: string | number) => {
           const tc = block.call;
 
           let diffLines: string[] | undefined;
@@ -911,9 +904,71 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
               ) : null}
             </Box>
           );
-        }
-        return null;
-      })}
+        };
+
+        return groupedBlocks.map((block: any, i: number) => {
+          const key = block.id || i;
+          if (block.type === 'user') return <Box key={key}><Text color="green" bold>❯ </Text><Text>{block.text}</Text></Box>;
+          if (block.type === 'error') return <Box key={key}><Text color="red">✖ Error: {block.text}</Text></Box>;
+          if (block.type === 'thinking') {
+            const isExpanded = toolsExpanded;
+            const thinkingText = (block as any).endTime ? (
+              <Text>💭 Thought for <Timer startTime={(block as any).startTime} endTime={(block as any).endTime} /></Text>
+            ) : (
+              <Text>💭 Thinking (<Timer startTime={(block as any).startTime} />)</Text>
+            );
+
+            return (
+              <Box key={key} marginLeft={2} flexDirection="column">
+                <Text color="magenta" dimColor>
+                  {thinkingText} {!isExpanded && <Text>(Ctrl+O to expand)</Text>}
+                </Text>
+                <Box marginLeft={2}>
+                  {isExpanded ? (
+                    <Text dimColor>{block.text}</Text>
+                  ) : (
+                    <Text dimColor wrap="truncate-end">{block.text.replace(/\\s+/g, ' ').trim()}</Text>
+                  )}
+                </Box>
+              </Box>
+            );
+          }
+          if (block.type === 'assistant') {
+            return <Box key={key} marginLeft={2}><Text>{(marked.parse(block.text) as string).trim() || block.text}</Text></Box>;
+          }
+          if (block.type === 'tool-call') {
+            return renderToolCall(block, key);
+          }
+          if (block.type === 'tool-group') {
+            if (!toolsExpanded) {
+              const callingCount = block.calls.filter((b: any) => b.call.status === 'calling').length;
+              const failedCount = block.calls.filter((b: any) => b.call.status === 'done' && b.call.result && typeof b.call.result === 'object' && b.call.result.success === false).length;
+              
+              let statusText = `Used ${block.calls.length} tools`;
+              if (callingCount > 0) statusText = `Using ${callingCount} tools...`;
+              else if (failedCount > 0) statusText = `Used ${block.calls.length} tools (${failedCount} failed)`;
+
+              return (
+                <Box key={key} marginLeft={2} flexDirection="row">
+                  {callingCount > 0 ? <Text color="yellow"><Spinner type="dots" /> </Text> : failedCount > 0 ? <Text color="red">✖ </Text> : <Text color="green">✔ </Text>}
+                  <Text color="cyan">{statusText}</Text>
+                  <Text dimColor> (Ctrl+O to expand)</Text>
+                </Box>
+              );
+            } else {
+              return (
+                <Box key={key} flexDirection="column">
+                  <Box marginLeft={2} marginBottom={0}>
+                    <Text dimColor>── Grouped Tools ({block.calls.length})</Text>
+                  </Box>
+                  {block.calls.map((b: any, j: number) => renderToolCall(b, `${key}-${j}`))}
+                </Box>
+              );
+            }
+          }
+          return null;
+        });
+      })()}
 
       {isStreaming && !pendingConfirm && (
         <Box marginLeft={2}><Text color="yellow"><Spinner type="dots" /> Working...</Text></Box>
