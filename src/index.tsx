@@ -3,9 +3,15 @@ import { applyPatch } from './patch-console.js';
 import React from 'react';
 import { render } from 'ink';
 import App from './app.js';
+import { startIpcServer } from './ipc.js';
 
 const args = process.argv.slice(2);
-const initialPrompt = args.length > 0 ? args.join(' ') : '';
+const isIpc = args.includes('--ipc');
+const initialPrompt = args.filter(a => a !== '--ipc').join(' ');
 
-render(<App initialPrompt={initialPrompt} />, { exitOnCtrlC: false });
-applyPatch();
+if (isIpc) {
+  startIpcServer();
+} else {
+  render(<App initialPrompt={initialPrompt} />, { exitOnCtrlC: false });
+  applyPatch();
+}
