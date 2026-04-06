@@ -13,6 +13,43 @@ let currentModel = 'gemini:gemini-3-flash-preview';
 let messages: any[] = [];
 let pendingConfirms = new Map<string, (accept: boolean) => void>();
 let combinedTools: ToolSet = allTools;
+let abortController: AbortController | null = null;
+
+function getToolLabel(name: string, args: any, status: 'calling' | 'done', result?: any): string {
+  const isDone = status === 'done';
+  const isFail = isDone && result && typeof result === 'object' && result.success === false;
+  const fileName = args?.path ? path.basename(args.path) : '';
+
+  if (isFail) {
+    switch (name) {
+      case 'listDirectory': return `Failed to list ${args.path}`;
+      case 'readFile': return `Failed to read ${fileName}`;
+      case 'writeFile': return `Failed to write ${fileName}`;
+      case 'editFile': return `Failed to edit ${fileName}`;
+      case 'runCommand': return `Failed to run ${args.command}`;
+      case 'subagent': return `Subagent failed`;
+      case 'checkCommandStatus': return `Failed to check command ${args.commandId}`;
+      default: return `Failed ${name}`;
+    }
+  }
+
+  switch (name) {
+    case 'listDirectory': return isDone ? `Listed ${args.path}` : `Listing ${args.path}`;
+    case 'readFile': return isDone ? `Read ${fileName}` : `Reading ${fileName}`;
+    case 'writeFile': return isDone ? `Wrote ${fileName}` : `Writing ${fileName}`;
+    case 'editFile': return isDone ? `Edited ${fileName}` : `Editing ${fileName}`;
+    case 'runCommand': return isDone ? `Ran ${args.command}` : `Running ${args.command}`;
+    case 'subagent': return isDone ? `Subagent finished` : `Running subagent`;
+    case 'checkCommandStatus': return isDone ? `Checked command ${args.commandId}` : `Checking command ${args.commandId}`;
+    default:
+      if (name.includes('_')) {
+        const [server, ...tool] = name.split('_');
+        const toolName = tool.join('_');
+        return isDone ? `${server}: Finished ${toolName}` : `${server}: Calling ${toolName}`;
+      }
+      return isDone ? `Finished ${name}` : `Calling ${name}`;
+  }
+}
 
 // Mute console.log so we don't break JSON stream
 const originalLog = console.log;
@@ -68,6 +105,7 @@ export async function startIpcServer() {
           tools: combinedTools,
           systemInstruction: sysInstruct,
           onConfirm: async (tc) => {
+            send({ type: 'status-update', text: `Waiting for user confirmation: ${tc.name}` });
             return new Promise<boolean>((resolve) => {
               pendingConfirms.set(tc.id, resolve);
               send({ type: 'tool-call-confirm', id: tc.id, name: tc.name, input: tc.input });
@@ -75,15 +113,31 @@ export async function startIpcServer() {
           }
         });
 
+        abortController = new AbortController();
+
         try {
           const stream = agent.stream(messages);
           for await (const part of stream) {
+             if (abortController?.signal.aborted) {
+               send({ type: 'error', error: 'User stopped generation.' });
+               break;
+             }
+             if (part.type === 'tool-call') {
+               send({ type: 'status-update', text: getToolLabel(part.toolName!, part.input, 'calling') });
+             } else if (part.type === 'tool-result') {
+               send({ type: 'status-update', text: getToolLabel(part.toolName || 'tool', {}, 'done', part.output) });
+             }
              send(part);
           }
           send({ type: 'step-done', messages });
         } catch (e: any) {
           send({ type: 'error', error: e.message });
         }
+      } else if (msg.type === 'abort') {
+         if (abortController) {
+           abortController.abort();
+           abortController = null;
+         }
       } else if (msg.type === 'confirm') {
          const resolve = pendingConfirms.get(msg.id);
          if (resolve) {
