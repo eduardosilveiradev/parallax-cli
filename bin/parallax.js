@@ -7,12 +7,11 @@ const __filename = fileURLToPath(import.meta.url);
 const binDir = path.dirname(__filename);
 const rootDir = path.resolve(binDir, '..');
 
-const tsxPath = path.resolve(rootDir, 'node_modules', '.bin', 'tsx');
-const child = spawn(tsxPath, [path.join(rootDir, 'src', 'index.tsx'), ...process.argv.slice(2)], {
+const child = spawn(process.execPath, ['--no-warnings=DEP0040', '--import', 'tsx', path.join(rootDir, 'src', 'index.tsx'), ...process.argv.slice(2)], {
   stdio: 'inherit',
   env: {
     ...process.env,
-    NODE_OPTIONS: [process.env.NODE_OPTIONS, '--no-warnings=DEP0040'].filter(Boolean).join(' ')
+    NODE_OPTIONS: [process.env.NODE_OPTIONS].filter(Boolean).join(' ')
   }
 });
 
