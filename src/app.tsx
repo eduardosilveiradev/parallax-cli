@@ -307,10 +307,13 @@ function SafeTextInput({ value, onChange, onSubmit, onCancel }: { value: string,
 
 export interface AppProps {
   initialPrompt?: string;
+  initialSessionId?: string;
   onExitCb?: (info: { sessionId: string; lastMsg: string; killedCount: number }) => void;
+  initialYolo?: boolean;
+  initialVerbose?: boolean;
 }
 
-export default function App({ initialPrompt, onExitCb }: AppProps = {}) {
+export default function App({ initialPrompt, initialSessionId, onExitCb, initialYolo = false, initialVerbose = false }: AppProps = {}) {
   const { exit } = useApp();
   const [sessionId, setSessionId] = useState<string>(() => crypto.randomBytes(4).toString('hex'));
   const HISTORY_FILE = path.join(os.homedir(), '.parallax', `${sessionId}.json`);
@@ -320,7 +323,7 @@ export default function App({ initialPrompt, onExitCb }: AppProps = {}) {
   const [blocks, setBlocks] = useState<MessageBlock[]>([]);
   const [messages, setMessages] = useState<any[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
-  const [toolsExpanded, setToolsExpanded] = useState(false);
+  const [toolsExpanded, setToolsExpanded] = useState(initialVerbose);
   const [exitPrompted, setExitPrompted] = useState(false);
   const [isExiting, setIsExiting] = useState(false);
   const [isSelectingModel, setIsSelectingModel] = useState(false);
@@ -334,7 +337,7 @@ export default function App({ initialPrompt, onExitCb }: AppProps = {}) {
   const [abortController, setAbortController] = useState<AbortController | null>(null);
   const [commandIndex, setCommandIndex] = useState(0);
   const hasInitialized = useRef(false);
-  const [yoloMode, setYoloMode] = useState(false);
+  const [yoloMode, setYoloMode] = useState(initialYolo);
   const yoloModeRef = useRef(yoloMode);
   useEffect(() => { yoloModeRef.current = yoloMode; }, [yoloMode]);
   const [pendingConfirm, setPendingConfirm] = useState<{ id: string; name: string; input: any; resolve: (b: boolean) => void } | null>(null);
@@ -825,11 +828,18 @@ export default function App({ initialPrompt, onExitCb }: AppProps = {}) {
   );
 
   useEffect(() => {
-    if (initialPrompt && !hasInitialized.current) {
+    if (initialSessionId && !hasInitialized.current) {
+      hasInitialized.current = true;
+      loadSession(initialSessionId);
+      if (initialPrompt) {
+        // slight delay to ensure messages loaded before submitting
+        setTimeout(() => handleSubmit(initialPrompt), 50);
+      }
+    } else if (initialPrompt && !hasInitialized.current) {
       hasInitialized.current = true;
       handleSubmit(initialPrompt);
     }
-  }, [initialPrompt, handleSubmit]);
+  }, [initialPrompt, initialSessionId, handleSubmit]);
 
   return (
     <Box flexDirection="column" padding={1} marginLeft={1}>
