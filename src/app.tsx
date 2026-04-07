@@ -305,7 +305,12 @@ function SafeTextInput({ value, onChange, onSubmit, onCancel }: { value: string,
   );
 }
 
-export default function App({ initialPrompt }: { initialPrompt?: string } = {}) {
+export interface AppProps {
+  initialPrompt?: string;
+  onExitCb?: (info: { sessionId: string; lastMsg: string; killedCount: number }) => void;
+}
+
+export default function App({ initialPrompt, onExitCb }: AppProps = {}) {
   const { exit } = useApp();
   const [sessionId, setSessionId] = useState<string>(() => crypto.randomBytes(4).toString('hex'));
   const HISTORY_FILE = path.join(os.homedir(), '.parallax', `${sessionId}.json`);
@@ -317,6 +322,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
   const [isStreaming, setIsStreaming] = useState(false);
   const [toolsExpanded, setToolsExpanded] = useState(false);
   const [exitPrompted, setExitPrompted] = useState(false);
+  const [isExiting, setIsExiting] = useState(false);
   const [isSelectingModel, setIsSelectingModel] = useState(false);
   const [isFetchingModels, setIsFetchingModels] = useState(false);
   const [availableModels, setAvailableModels] = useState<ModelListing[]>([]);
@@ -443,7 +449,6 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
 
     if (exitPrompted) {
       if (key.ctrl && input === 'c') {
-        exit();
         let lastMsg = 'No previous messages.';
         for (let i = blocks.length - 1; i >= 0; i--) {
           const b: any = blocks[i];
@@ -453,11 +458,6 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
             break;
           }
         }
-        console.log(`\n`);
-        console.log("Parallax shutting down...")
-        console.log(`Session ID: ${sessionId}`);
-        console.log(`Last message: "${lastMsg}"`);
-        console.log(`\n`);
 
         let killedCount = 0;
         for (const [id, cmd] of activeCommands.entries()) {
@@ -466,11 +466,13 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
             killedCount++;
           } catch (e) { }
         }
-        if (killedCount > 0) {
-          console.log(`Forcefully terminated ${killedCount} background process(es).`);
+
+        if (onExitCb) {
+          onExitCb({ sessionId, lastMsg, killedCount });
         }
 
-        process.exit(0);
+        setIsExiting(true);
+        setTimeout(() => exit(), 5);
       } else {
         setExitPrompted(false);
       }
@@ -556,11 +558,11 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
           } else {
             setIsFetchingModels(true);
             fetchAvailableModels().then(models => {
-               setAvailableModels(models);
-               setIsFetchingModels(false);
-               setIsSelectingModel(true);
+              setAvailableModels(models);
+              setIsFetchingModels(false);
+              setIsSelectingModel(true);
             }).catch(() => {
-               setIsFetchingModels(false);
+              setIsFetchingModels(false);
             });
           }
           return;
@@ -943,7 +945,7 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
             if (!toolsExpanded) {
               const callingCount = block.calls.filter((b: any) => b.call.status === 'calling').length;
               const failedCount = block.calls.filter((b: any) => b.call.status === 'done' && b.call.result && typeof b.call.result === 'object' && b.call.result.success === false).length;
-              
+
               let statusText = `Used ${block.calls.length} tools`;
               if (callingCount > 0) statusText = `Using ${callingCount} tools...`;
               else if (failedCount > 0) statusText = `Used ${block.calls.length} tools (${failedCount} failed)`;
@@ -1106,23 +1108,27 @@ export default function App({ initialPrompt }: { initialPrompt?: string } = {}) 
         </Box>
       )}
 
-      <Box marginTop={1} flexDirection="row" justifyContent="space-between">
-        {exitPrompted ? <Text color="red" bold>Press Ctrl+C again to exit.</Text> : <Text dimColor>Ctrl+C - Exit {isStreaming ? '| Esc - Stop' : '| Tab - Cycle Mode'}</Text>}
-        <Text dimColor>
-          Ctrl+O - Verbose mode {toolsExpanded ? <Text color="magenta" bold>ON</Text> : 'OFF'} | Shift+Tab - YOLO {yoloMode ? <Text dimColor color="red" bold>ON</Text> : <Text dimColor>OFF</Text>}
-        </Text>
-      </Box>
+      {!isExiting && (
+        <>
+          <Box marginTop={1} flexDirection="row" justifyContent="space-between">
+            {exitPrompted ? <Text color="red" bold>Press Ctrl+C again to exit.</Text> : <Text dimColor>Ctrl+C - Exit {isStreaming ? '| Esc - Stop' : '| Tab - Cycle Mode'}</Text>}
+            <Text dimColor>
+              Ctrl+O - Verbose mode {toolsExpanded ? <Text color="magenta" bold>ON</Text> : 'OFF'} | Shift+Tab - YOLO {yoloMode ? <Text dimColor color="red" bold>ON</Text> : <Text dimColor>OFF</Text>}
+            </Text>
+          </Box>
 
-      <Box flexDirection="row" justifyContent="space-between">
-        <Box flexDirection="row">
-          <Text dimColor>Mode: </Text>
-          <Text color={mode === 'agent' ? 'blue' : mode === 'plan' ? 'green' : 'yellow'} bold>{mode.toUpperCase()}</Text>
-          <Text dimColor> | Model: {currentModel}</Text>
-        </Box>
-        <Text dimColor>
-          Context: {messages.length} msgs (~{Math.floor(blocks.reduce((acc: number, b: any) => acc + (b.text?.length || 0), 0) / 4 + messages.reduce((acc: number, m: any) => acc + JSON.stringify(m).length, 0) / 4).toLocaleString()} tokens)
-        </Text>
-      </Box>
+          <Box flexDirection="row" justifyContent="space-between">
+            <Box flexDirection="row">
+              <Text dimColor>Mode: </Text>
+              <Text color={mode === 'agent' ? 'blue' : mode === 'plan' ? 'green' : 'yellow'} bold>{mode.toUpperCase()}</Text>
+              <Text dimColor> | Model: {currentModel}</Text>
+            </Box>
+            <Text dimColor>
+              Context: {messages.length} msgs (~{Math.floor(blocks.reduce((acc: number, b: any) => acc + (b.text?.length || 0), 0) / 4 + messages.reduce((acc: number, m: any) => acc + JSON.stringify(m).length, 0) / 4).toLocaleString()} tokens)
+            </Text>
+          </Box>
+        </>
+      )}
     </Box>
   );
 }
