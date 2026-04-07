@@ -98,12 +98,20 @@ export class GenericProvider implements AgentProvider {
     const formattedMessages = this.mapMessages(args.systemInstruction, args.messages);
     const formattedTools = this.mapTools(args.tools);
 
-    const stream = await this.client.chat.completions.create({
-      model: this.model,
-      messages: formattedMessages,
-      tools: formattedTools,
-      stream: true,
-    });
+    let stream: any;
+    try {
+      stream = await this.client.chat.completions.create({
+        model: this.model,
+        messages: formattedMessages,
+        tools: formattedTools,
+        stream: true,
+      });
+    } catch (err: any) {
+      if (err?.message?.includes('greater than the context length') || err?.message?.includes('context_length_exceeded')) {
+        throw new Error(`Context limit exceeded. For local hosts (LMStudio, Ollama), increase your Context Length (n_ctx) setting. Or type /compact to clear memory. Original: ${err.message}`);
+      }
+      throw err;
+    }
 
     const toolCallBuffers = new Map<number, { id: string, name: string, args: string }>();
     const finalParts: any[] = [];
