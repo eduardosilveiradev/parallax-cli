@@ -7,7 +7,8 @@
   },
   "scripts": {
     "start": "NODE_OPTIONS='--no-warnings=DEP0040' tsx src/index.tsx",
-    "dev": "NODE_OPTIONS='--no-warnings=DEP0040' tsx watch src/index.tsx"
+    "dev": "NODE_OPTIONS='--no-warnings=DEP0040' tsx watch src/index.tsx",
+    "publish": "parallax /commmit && pnpm version patch && pnpm publish"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.82.0",
