@@ -7,6 +7,7 @@ import { allTools } from './tools.js';
 import { loadMcpTools } from './mcp.js';
 import { loadWorkspaceSkills } from './skills.js';
 import { fetchAvailableModels } from './agent/model-loader.js';
+import { getSystemPrompt } from './system-prompt.js';
 import type { ToolSet } from './agent/types.js';
 
 let currentModel = 'gemini:gemini-3-flash-preview';
@@ -82,7 +83,7 @@ export async function startIpcServer() {
       const msg = JSON.parse(line);
       
       if (msg.type === 'message') {
-        let sysInstruct = `You are a coding assistant.\nAlways respond in the users language.\nAlways use tools proactively.\nWhen reading/listing files do NOT use bash commands. USE YOUR TOOLS.\nYou are in a terminal environment, not a GUI, this means you should avoid markdown at all costs.`;
+        let sysInstruct = getSystemPrompt();
 
         const parallaxMdPath = path.join(process.cwd(), 'PARALLAX.md');
         if (fs.existsSync(parallaxMdPath)) {

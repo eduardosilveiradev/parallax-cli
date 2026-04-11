@@ -15,6 +15,7 @@ import { allTools, activeCommands } from './tools.js';
 import { loadMcpTools } from './mcp.js';
 import { loadWorkspaceSkills, SkillSummary } from './skills.js';
 import type { MessageBlock, ToolCallInfo, ToolSet, ToolDefinition } from './agent/types.js';
+import { getSystemPrompt } from './system-prompt.js';
 import { fetchAvailableModels, ModelListing } from './agent/model-loader.js';
 
 type AppMode = 'agent' | 'plan' | 'debug';
@@ -698,7 +699,7 @@ export default function App({ initialPrompt, initialSessionId, onExitCb, initial
 
       const provider = ProviderFactory.create(currentModel);
 
-      let sysInstruct = `You are a coding assistant.\nAlways respond in the users language.\nAlways use tools proactively.\nWhen reading/listing files do NOT use bash commands. USE YOUR TOOLS.\nYou are in a terminal environment, not a GUI, this means you should avoid markdown at all costs.`;
+      let sysInstruct = getSystemPrompt();
 
       const parallaxMdPath = path.join(process.cwd(), 'PARALLAX.md');
       if (fs.existsSync(parallaxMdPath)) {

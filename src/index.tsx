@@ -14,6 +14,7 @@ import { allTools } from './tools.js';
 import { loadMcpTools } from './mcp.js';
 import { loadWorkspaceSkills } from './skills.js';
 import * as readline from 'readline/promises';
+import { getSystemPrompt } from './system-prompt.js';
 
 const args = process.argv.slice(2);
 const isIpc = args.includes('--ipc');
@@ -64,7 +65,7 @@ async function start() {
     const mcpTools = await loadMcpTools();
     const combinedTools = { ...allTools, loadSkill: loadSkillTool, ...mcpTools };
 
-    let sysInstruct = 'You are a coding assistant.\nAlways respond in the users language.\nAlways use tools proactively.\nWhen reading/listing files do NOT use bash commands. USE YOUR TOOLS.\nYou are in a terminal environment, not a GUI, this means you should avoid markdown at all costs.';
+    let sysInstruct = getSystemPrompt();
 
     const parallaxMdPath = path.join(process.cwd(), 'PARALLAX.md');
     if (fs.existsSync(parallaxMdPath)) {
@@ -191,7 +192,7 @@ async function start() {
     const mcpTools = await loadMcpTools();
     const combinedTools = { ...allTools, loadSkill: loadSkillTool, ...mcpTools };
 
-    let sysInstruct = 'You are a coding assistant.\nAlways respond in the users language.\nAlways use tools proactively.\nWhen reading/listing files do NOT use bash commands. USE YOUR TOOLS.\nYou are in a terminal environment, not a GUI, this means you should avoid markdown at all costs.';
+    let sysInstruct = getSystemPrompt();
 
     const parallaxMdPath = path.join(process.cwd(), 'PARALLAX.md');
     if (fs.existsSync(parallaxMdPath)) {
