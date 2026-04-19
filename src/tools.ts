@@ -88,20 +88,20 @@ export const allTools: ToolSet = {
         parameters: {
             type: 'object',
             properties: {
-                directory: { type: 'string' },
-                pattern: { type: 'string' },
-                isRegex: { type: 'boolean' },
-                caseSensitive: { type: 'boolean' }
+                SearchPath: { type: 'string' },
+                Query: { type: 'string' },
+                IsRegex: { type: 'boolean' },
+                CaseInsensitive: { type: 'boolean' }
             },
-            required: ['directory', 'pattern']
+            required: ['SearchPath', 'Query']
         },
         execute: async (args: any) => {
             try {
-                const fullPath = path.resolve(args.directory);
+                const fullPath = path.resolve(args.SearchPath);
                 const MAX_RESULTS = 250;
-                const matches = await threadedSearch(fullPath, args.pattern, {
-                    isRegex: !!args.isRegex,
-                    caseSensitive: !!args.caseSensitive,
+                const matches = await threadedSearch(fullPath, args.Query, {
+                    isRegex: !!args.IsRegex,
+                    caseSensitive: !args.CaseInsensitive,
                     maxResults: MAX_RESULTS
                 });
                 return {
@@ -171,12 +171,12 @@ export const allTools: ToolSet = {
         description: "List the contents of a directory, i.e. all files and subdirectories.",
         parameters: {
             type: 'object',
-            properties: { path: { type: 'string', description: 'Path to list contents of, should be absolute path to a directory.' } },
-            required: ['path']
+            properties: { DirectoryPath: { type: 'string', description: 'Path to list contents of, should be absolute path to a directory.' } },
+            required: ['DirectoryPath']
         },
-        execute: async ({ path: directoryPath }: any) => {
+        execute: async ({ DirectoryPath }: any) => {
             try {
-                const resolved = path.resolve(directoryPath);
+                const resolved = path.resolve(DirectoryPath);
                 const entries = fs.readdirSync(resolved, { withFileTypes: true });
                 const results = [];
                 for (const entry of entries) {
@@ -202,20 +202,20 @@ export const allTools: ToolSet = {
         parameters: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'Absolute or relative path to the file to read.' },
-                startLine: { type: 'number', description: 'Optional. Startline to view, 1-indexed as usual, inclusive.' },
-                endLine: { type: 'number', description: 'Optional. Endline to view, 1-indexed as usual, inclusive.' }
+                AbsolutePath: { type: 'string', description: 'Absolute or relative path to the file to read.' },
+                StartLine: { type: 'number', description: 'Optional. Startline to view, 1-indexed as usual, inclusive.' },
+                EndLine: { type: 'number', description: 'Optional. Endline to view, 1-indexed as usual, inclusive.' }
             },
-            required: ['path']
+            required: ['AbsolutePath']
         },
-        execute: async ({ path: filePath, startLine, endLine }: any) => {
+        execute: async ({ AbsolutePath, StartLine, EndLine }: any) => {
             try {
-                const resolved = path.resolve(filePath);
+                const resolved = path.resolve(AbsolutePath);
                 const content = fs.readFileSync(resolved, 'utf8');
-                if (startLine || endLine) {
+                if (StartLine || EndLine) {
                     const lines = content.split('\n');
-                    const start = Math.max(0, (startLine || 1) - 1);
-                    const end = endLine ? Math.min(lines.length, endLine) : lines.length;
+                    const start = Math.max(0, (StartLine || 1) - 1);
+                    const end = EndLine ? Math.min(lines.length, EndLine) : lines.length;
                     return { success: true, path: resolved, content: lines.slice(start, end).join('\n') };
                 }
                 return { success: true, path: resolved, content };
@@ -230,21 +230,76 @@ export const allTools: ToolSet = {
         parameters: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'Path to the file to create and write code to.' },
-                content: { type: 'string', description: 'The code contents to write to the file.' },
-                overwrite: { type: 'boolean', description: 'Set this to true to overwrite an existing file.' }
+                TargetFile: { type: 'string', description: 'Path to the file to create and write code to.' },
+                CodeContent: { type: 'string', description: 'The code contents to write to the file.' },
+                Overwrite: { type: 'boolean', description: 'Set this to true to overwrite an existing file.' }
             },
-            required: ['path', 'content']
+            required: ['TargetFile', 'CodeContent']
         },
-        execute: async ({ path: filePath, content, overwrite }: any) => {
+        execute: async ({ TargetFile, CodeContent, Overwrite }: any) => {
             try {
-                const resolved = path.resolve(filePath);
-                if (fs.existsSync(resolved) && !overwrite) {
-                    return { success: false, error: `File already exists at ${filePath}. Use overwrite=true if you are sure.` };
+                const resolved = path.resolve(TargetFile);
+                if (fs.existsSync(resolved) && !Overwrite) {
+                    return { success: false, error: `File already exists at ${TargetFile}. Use Overwrite=true if you are sure.` };
                 }
                 fs.mkdirSync(path.dirname(resolved), { recursive: true });
-                fs.writeFileSync(resolved, content, 'utf8');
-                return { success: true, path: resolved, bytesWritten: Buffer.byteLength(content) };
+                fs.writeFileSync(resolved, CodeContent, 'utf8');
+                return { success: true, path: resolved, bytesWritten: Buffer.byteLength(CodeContent) };
+            } catch (err: any) {
+                return { success: false, error: err.message };
+            }
+        }
+    },
+    MultiReplaceFileContent: {
+        description: "Edit an existing file by making multiple non-adjacent contiguous block edits.",
+        requiresConfirmation: true,
+        parameters: {
+            type: 'object',
+            properties: {
+                TargetFile: { type: 'string', description: 'The target file to modify.' },
+                Instruction: { type: 'string', description: 'Description of the changes' },
+                Description: { type: 'string', description: 'Brief explanation of what this change did' },
+                TargetLintErrorIds: { type: 'array', items: { type: 'string' } },
+                ReplacementChunks: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            StartLine: { type: 'number' },
+                            EndLine: { type: 'number' },
+                            TargetContent: { type: 'string' },
+                            ReplacementContent: { type: 'string' },
+                            AllowMultiple: { type: 'boolean' }
+                        },
+                        required: ['TargetContent', 'ReplacementContent']
+                    }
+                }
+            },
+            required: ['TargetFile', 'ReplacementChunks']
+        },
+        execute: async ({ TargetFile, ReplacementChunks }: any) => {
+            try {
+                const resolved = path.resolve(TargetFile);
+                if (!fs.existsSync(resolved)) return { success: false, error: 'File does not exist: ' + resolved };
+                let content = fs.readFileSync(resolved, 'utf-8');
+                let replacedCount = 0;
+
+                for (let i = 0; i < ReplacementChunks.length; i++) {
+                    const chunk = ReplacementChunks[i];
+                    const targetContent = chunk.TargetContent;
+                    const replacementContent = chunk.ReplacementContent;
+                    const allowMultiple = chunk.AllowMultiple;
+
+                    const occurrences = content.split(targetContent).length - 1;
+                    if (occurrences === 0) return { success: false, error: `Chunk ${i} Target text not found in file. Whitespace must match exactly.` };
+                    if (occurrences > 1 && !allowMultiple) return { success: false, error: `Chunk ${i} Multiple occurrences found (${occurrences}). Set AllowMultiple=true if intended.` };
+
+                    content = allowMultiple ? content.split(targetContent).join(replacementContent) : content.replace(targetContent, replacementContent);
+                    replacedCount += allowMultiple ? occurrences : 1;
+                }
+
+                fs.writeFileSync(resolved, content, 'utf-8');
+                return { success: true, message: `Successfully replaced ${replacedCount} occurrences across ${ReplacementChunks.length} chunks in ${TargetFile}` };
             } catch (err: any) {
                 return { success: false, error: err.message };
             }
@@ -256,26 +311,26 @@ export const allTools: ToolSet = {
         parameters: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'The target file to modify.' },
-                targetContent: { type: 'string', description: 'The exact character-sequence to be replaced, including whitespace.' },
-                replacementContent: { type: 'string', description: 'The content to replace the target content with.' },
-                allowMultiple: { type: 'boolean', description: 'If true, replace multiple occurrences.' }
+                TargetFile: { type: 'string', description: 'The target file to modify.' },
+                TargetContent: { type: 'string', description: 'The exact character-sequence to be replaced, including whitespace.' },
+                ReplacementContent: { type: 'string', description: 'The content to replace the target content with.' },
+                AllowMultiple: { type: 'boolean', description: 'If true, replace multiple occurrences.' }
             },
-            required: ['path', 'targetContent', 'replacementContent']
+            required: ['TargetFile', 'TargetContent', 'ReplacementContent']
         },
-        execute: async ({ path: filePath, targetContent, replacementContent, allowMultiple }: any) => {
+        execute: async ({ TargetFile, TargetContent, ReplacementContent, AllowMultiple }: any) => {
             try {
-                const resolved = path.resolve(filePath);
+                const resolved = path.resolve(TargetFile);
                 if (!fs.existsSync(resolved)) return { success: false, error: 'File does not exist: ' + resolved };
                 let content = fs.readFileSync(resolved, 'utf-8');
-                const occurrences = content.split(targetContent).length - 1;
+                const occurrences = content.split(TargetContent).length - 1;
 
                 if (occurrences === 0) return { success: false, error: 'Target text not found in file. Whitespace must match exactly.' };
-                if (occurrences > 1 && !allowMultiple) return { success: false, error: `Multiple occurrences found (${occurrences}). Set allowMultiple=true if intended.` };
+                if (occurrences > 1 && !AllowMultiple) return { success: false, error: `Multiple occurrences found (${occurrences}). Set AllowMultiple=true if intended.` };
 
-                const newContent = allowMultiple ? content.split(targetContent).join(replacementContent) : content.replace(targetContent, replacementContent);
+                const newContent = AllowMultiple ? content.split(TargetContent).join(ReplacementContent) : content.replace(TargetContent, ReplacementContent);
 
-                const diffPatch = diff.createPatch(filePath, content, newContent);
+                const diffPatch = diff.createPatch(TargetFile, content, newContent);
                 const client = await getConnectedIdeClient();
                 if (client && client.isDiffingEnabled()) {
                     client.openDiff(resolved, newContent).then(res => {
@@ -287,7 +342,7 @@ export const allTools: ToolSet = {
                 }
 
                 fs.writeFileSync(resolved, newContent, 'utf-8');
-                return { success: true, message: `Successfully replaced ${allowMultiple ? occurrences : 1} occurrences in ${filePath}`, diff: diffPatch };
+                return { success: true, message: `Successfully replaced ${AllowMultiple ? occurrences : 1} occurrences in ${TargetFile}`, diff: diffPatch };
             } catch (err: any) {
                 return { success: false, error: err.message };
             }
@@ -299,16 +354,16 @@ export const allTools: ToolSet = {
         parameters: {
             type: 'object',
             properties: {
-                command: { type: 'string', description: 'The exact command line string to execute.' },
-                cwd: { type: 'string', description: 'The current working directory for the command. Will default to project root if left empty.' },
-                waitMsBeforeAsync: { type: 'number', description: 'Optional wait time before returning if command is long running.' }
+                CommandLine: { type: 'string', description: 'The exact command line string to execute.' },
+                Cwd: { type: 'string', description: 'The current working directory for the command. Will default to project root if left empty.' },
+                WaitMsBeforeAsync: { type: 'number', description: 'Optional wait time before returning if command is long running.' }
             },
-            required: ['command']
+            required: ['CommandLine']
         },
-        execute: async ({ command, cwd, waitMsBeforeAsync }: any) => {
+        execute: async ({ CommandLine, Cwd, WaitMsBeforeAsync }: any) => {
             try {
                 const id = crypto.randomUUID();
-                const child = spawn(command, { shell: true, cwd: cwd ? path.resolve(cwd) : process.cwd() });
+                const child = spawn(CommandLine, { shell: true, cwd: Cwd ? path.resolve(Cwd) : process.cwd() });
 
                 const cmdState: RunningCommand = {
                     id,
@@ -330,7 +385,7 @@ export const allTools: ToolSet = {
                     cmdState.outputBuffer += `\n[System Error]: ${err.message}`;
                 });
 
-                const waitTime = waitMsBeforeAsync || 5000;
+                const waitTime = WaitMsBeforeAsync || 5000;
 
                 return await new Promise((resolve) => {
                     let done = false;
@@ -356,24 +411,24 @@ export const allTools: ToolSet = {
         parameters: {
             type: 'object',
             properties: {
-                commandId: { type: 'string', description: 'ID of the command to get status for' },
-                outputCharacterCount: { type: 'number', description: 'Number of characters to view. Max 5000.' },
-                waitDurationSeconds: { type: 'number', description: 'Seconds to wait for command completion before getting status' }
+                CommandId: { type: 'string', description: 'ID of the command to get status for' },
+                OutputCharacterCount: { type: 'number', description: 'Number of characters to view. Max 5000.' },
+                WaitDurationSeconds: { type: 'number', description: 'Seconds to wait for command completion before getting status' }
             },
-            required: ['commandId']
+            required: ['CommandId']
         },
-        execute: async ({ commandId, outputCharacterCount, waitDurationSeconds }: any) => {
-            const cmdState = activeCommands.get(commandId);
-            if (!cmdState) return { success: false, error: `Unknown command ID ${commandId}` };
+        execute: async ({ CommandId, OutputCharacterCount, WaitDurationSeconds }: any) => {
+            const cmdState = activeCommands.get(CommandId);
+            if (!cmdState) return { success: false, error: `Unknown command ID ${CommandId}` };
 
-            if (waitDurationSeconds && cmdState.status === 'running') {
+            if (WaitDurationSeconds && cmdState.status === 'running') {
                 await new Promise((resolve) => {
-                    const timeout = setTimeout(resolve, waitDurationSeconds * 1000);
+                    const timeout = setTimeout(resolve, WaitDurationSeconds * 1000);
                     cmdState.process.once('close', () => { clearTimeout(timeout); resolve(undefined); });
                 });
             }
 
-            const limit = outputCharacterCount || 2000;
+            const limit = OutputCharacterCount || 2000;
             const out = cmdState.outputBuffer.slice(-limit);
             cmdState.outputBuffer = out;
 
@@ -391,23 +446,23 @@ export const allTools: ToolSet = {
         parameters: {
             type: 'object',
             properties: {
-                commandId: { type: 'string', description: 'The command ID.' },
-                input: { type: 'string', description: 'The input to send to stdin. Include newline characters if needed.' },
-                terminate: { type: 'boolean', description: 'Whether to terminate the command.' }
+                CommandId: { type: 'string', description: 'The command ID.' },
+                Input: { type: 'string', description: 'The input to send to stdin. Include newline characters if needed.' },
+                Terminate: { type: 'boolean', description: 'Whether to terminate the command.' }
             },
-            required: ['commandId']
+            required: ['CommandId']
         },
-        execute: async ({ commandId, input, terminate }: any) => {
-            const cmdState = activeCommands.get(commandId);
-            if (!cmdState) return { success: false, error: `Unknown command ID ${commandId}` };
+        execute: async ({ CommandId, Input, Terminate }: any) => {
+            const cmdState = activeCommands.get(CommandId);
+            if (!cmdState) return { success: false, error: `Unknown command ID ${CommandId}` };
 
-            if (terminate) {
+            if (Terminate) {
                 cmdState.process.kill();
-                return { success: true, message: `Sent SIGTERM to command ${commandId}` };
+                return { success: true, message: `Sent SIGTERM to command ${CommandId}` };
             }
 
-            if (input && cmdState.status === 'running') {
-                cmdState.process.stdin?.write(input);
+            if (Input && cmdState.status === 'running') {
+                cmdState.process.stdin?.write(Input);
                 await new Promise(resolve => setTimeout(resolve, 500));
                 return { success: true, message: `Input sent.\nCurrent output:\n${cmdState.outputBuffer.slice(-1000)}` };
             }
