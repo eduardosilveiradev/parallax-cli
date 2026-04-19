@@ -165,9 +165,16 @@ export class GeminiProvider implements AgentProvider {
     async *stream({ systemInstruction, messages, tools }: { systemInstruction?: string; messages: any[]; tools?: ToolSet }): AsyncGenerator<StreamPart, void, unknown> {
         const client = await this.ensureInit();
 
+        const cleanedMessages = messages.map(m => {
+            if (m.role !== 'model') return m;
+            const cleanParts = m.parts.filter((p: any) => p.thought !== true);
+            if (cleanParts.length === 0) return null;
+            return { ...m, parts: cleanParts };
+        }).filter(Boolean);
+
         const request: any = {
             model: this.model,
-            contents: messages,
+            contents: cleanedMessages,
             config: {
                 thinkingConfig: { includeThoughts: true, thinkingLevel: 'HIGH' }
             }
@@ -229,12 +236,15 @@ export class GeminiProvider implements AgentProvider {
                         finalParts.push({ ...part });
                     }
                 } else if (part.text !== undefined) {
-                    yield { type: 'text-delta', text: part.text };
-                    const lastPart = finalParts.length > 0 ? finalParts[finalParts.length - 1] : null;
-                    if (lastPart && lastPart.thought !== true && lastPart.text !== undefined) {
-                        lastPart.text += part.text;
-                    } else {
-                        finalParts.push({ ...part });
+                    let cleanedText = part.text.replace(/\[Thought:\s*(true|false)\]\s*/g, '');
+                    if (cleanedText.length > 0) {
+                        yield { type: 'text-delta', text: cleanedText };
+                        const lastPart = finalParts.length > 0 ? finalParts[finalParts.length - 1] : null;
+                        if (lastPart && lastPart.thought !== true && lastPart.text !== undefined) {
+                            lastPart.text += cleanedText;
+                        } else {
+                            finalParts.push({ ...part, text: cleanedText });
+                        }
                     }
                 } else {
                     if (part.functionCall) {

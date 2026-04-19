@@ -55,18 +55,41 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
                 const id = f.replace('.json', '');
                 const stat = fs.statSync(path.join(dir, f));
                 const history = getHistory(id);
-                return { id, mtime: stat.mtimeMs, messageCount: history.messages?.length || 0 };
+                let lastMessage = 'Empty session';
+                if (history.blocks && history.blocks.length > 0) {
+                    const textBlocks = history.blocks.filter((b: any) => b.type === 'user' || (b.type === 'assistant' && b.text));
+                    if (textBlocks.length > 0) {
+                        lastMessage = textBlocks[textBlocks.length - 1].text || '';
+                        if (lastMessage.length > 100) lastMessage = lastMessage.substring(0, 100) + '...';
+                    }
+                }
+                return { id, mtime: stat.mtimeMs, messageCount: history.messages?.length || 0, lastMessage };
             });
             sessions.sort((a, b) => b.mtime - a.mtime);
             
             // make sure the current CLI session is always returned even if it doesn't have a file yet
             if (!sessions.find(s => s.id === cliSessionId)) {
-                sessions.unshift({ id: cliSessionId, mtime: Date.now(), messageCount: 0 });
+                sessions.unshift({ id: cliSessionId, mtime: Date.now(), messageCount: 0, lastMessage: 'Current UI Session' });
             }
             
             res.json(sessions);
         } catch (e) {
             res.status(500).json({ error: 'Failed to list sessions' });
+        }
+    });
+
+    app.delete('/sessions/:id', (req, res) => {
+        const id = req.params.id;
+        const historyPath = getHistoryPath(id);
+        if (fs.existsSync(historyPath)) {
+            try {
+                fs.unlinkSync(historyPath);
+                res.json({ success: true });
+            } catch (e) {
+                res.status(500).json({ error: 'Failed to delete session' });
+            }
+        } else {
+            res.json({ success: true });
         }
     });
 
