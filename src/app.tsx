@@ -1,6 +1,7 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Box, Text, useInput, useApp } from 'ink';
+import { Box, Text, useInput, useApp, Static } from 'ink';
 import Spinner from 'ink-spinner';
+import { Shimmer } from './shimmer.js';
 import * as marked from 'marked';
 import TerminalRenderer from 'marked-terminal';
 import crypto from 'node:crypto';
@@ -25,1121 +26,1331 @@ marked.setOptions({ renderer: new TerminalRenderer() as any });
 const MODEL = 'gemini:gemini-3-flash-preview';
 
 function getToolLabel(name: string, args: any, status: 'calling' | 'done', result?: any): string {
-  const isDone = status === 'done';
-  const isFail = isDone && result && typeof result === 'object' && result.success === false;
-  const fileName = args?.path ? path.basename(args.path) : '';
+    const isDone = status === 'done';
+    const isFail = isDone && result && typeof result === 'object' && result.success === false;
+    const filePath = args?.TargetFile || args?.AbsolutePath || args?.DirectoryPath || args?.path;
+    const fileName = filePath ? path.basename(filePath) : '';
+    const cmdLine = args?.CommandLine || args?.command;
+    const cmdId = args?.CommandId || args?.commandId;
 
-  if (isFail) {
-    switch (name) {
-      case 'listDirectory': return `Failed to list ${args.path}`;
-      case 'readFile': return `Failed to read ${fileName}`;
-      case 'writeFile': return `Failed to write ${fileName}`;
-      case 'editFile': return `Failed to edit ${fileName}`;
-      case 'runCommand': return `Failed to run ${args.command}`;
-      case 'subagent': return `Subagent failed`;
-      case 'checkCommandStatus': return `Failed to check command ${args.commandId}`;
-      default: return `Failed ${name}`;
+    if (isFail) {
+        switch (name) {
+            case 'ListDir': return `Failed to list ${filePath}`;
+            case 'ViewFile': return `Failed to read ${fileName}`;
+            case 'WriteToFile': return `Failed to write ${fileName}`;
+            case 'ReplaceFileContent':
+            case 'MultiReplaceFileContent': return `Failed to edit ${fileName}`;
+            case 'RunCommand': return `Failed to run command`;
+            case 'CommandStatus': return `Failed to check command ${cmdId}`;
+            case 'SendCommandInput': return `Failed to send input to ${cmdId}`;
+            case 'GrepSearch': return `Failed to search codebase`;
+            case 'SearchWeb': return `Failed to search web`;
+            case 'ReadUrlContent': return `Failed to read URL`;
+            case 'ReadClipboard': return `Failed to read clipboard`;
+            case 'WriteClipboard': return `Failed to write clipboard`;
+            default: return `Failed ${name}`;
+        }
     }
-  }
 
-  switch (name) {
-    case 'listDirectory':
-      return isDone ? `Listed ${args.path}` : `Listing ${args.path}`;
-    case 'readFile':
-      return isDone ? `Read ${fileName}` : `Reading ${fileName}`;
-    case 'writeFile':
-      return isDone ? `Wrote ${fileName}` : `Writing ${fileName}`;
-    case 'editFile':
-      return isDone ? `Edited ${fileName}` : `Editing ${fileName}`;
-    case 'runCommand':
-      return isDone ? `Ran ${args.command}` : `Running ${args.command}`;
-    case 'subagent':
-      return isDone ? `Subagent finished` : `Running subagent`;
-    case 'checkCommandStatus':
-      return isDone ? `Checked command ${args.commandId}` : `Checking command ${args.commandId}`;
-    default:
-      if (name.includes('_')) {
-        const [server, ...tool] = name.split('_');
-        const toolName = tool.join('_');
-        return isDone ? `${server}: Finished ${toolName}` : `${server}: Calling ${toolName}`;
-      }
-      return isDone ? `Finished ${name}` : `Calling ${name}`;
-  }
+    switch (name) {
+        case 'ListDir':
+            return isDone ? `Listed ${filePath}` : `Listing ${filePath}`;
+        case 'ViewFile':
+            return isDone ? `Read ${fileName}` : `Reading ${fileName}`;
+        case 'WriteToFile':
+            return isDone ? `Wrote ${fileName}` : `Writing ${fileName}`;
+        case 'ReplaceFileContent':
+        case 'MultiReplaceFileContent':
+            return isDone ? `Edited ${fileName}` : `Editing ${fileName}`;
+        case 'RunCommand':
+            return isDone ? `Ran command` : `Running command`;
+        case 'CommandStatus':
+            return isDone ? `Checked command ${cmdId}` : `Checking command ${cmdId}`;
+        case 'SendCommandInput':
+            return isDone ? `Sent input to ${cmdId}` : `Sending input to ${cmdId}`;
+        case 'GrepSearch':
+            return isDone ? `Searched for "${args?.Query}"` : `Searching for "${args?.Query}"`;
+        case 'SearchWeb':
+            return isDone ? `Searched web for "${args?.query}"` : `Searching web for "${args?.query}"`;
+        case 'ReadUrlContent':
+            return isDone ? `Read ${args?.Url}` : `Reading ${args?.Url}`;
+        case 'ReadClipboard':
+            return isDone ? `Read clipboard` : `Reading clipboard`;
+        case 'WriteClipboard':
+            return isDone ? `Wrote to clipboard` : `Writing to clipboard`;
+        default:
+            if (name.includes('_')) {
+                const [server, ...tool] = name.split('_');
+                const toolName = tool.join('_');
+                return isDone ? `${server}: Finished ${toolName}` : `${server}: Calling ${toolName}`;
+            }
+            return isDone ? `Finished ${name}` : `Calling ${name}`;
+    }
 }
 
 function Timer({ startTime, endTime }: { startTime?: number; endTime?: number }) {
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (endTime || !startTime) return;
-    const interval = setInterval(() => setNow(Date.now()), 100);
-    return () => clearInterval(interval);
-  }, [startTime, endTime]);
+    const [now, setNow] = useState(Date.now());
+    useEffect(() => {
+        if (endTime || !startTime) return;
+        const interval = setInterval(() => setNow(Date.now()), 100);
+        return () => clearInterval(interval);
+    }, [startTime, endTime]);
 
-  if (!startTime) return <Text></Text>;
-  const ms = (endTime || now) - startTime;
-  const s = (ms / 1000).toFixed(1);
-  return <Text>{s}s</Text>;
+    if (!startTime) return <Text></Text>;
+    const ms = (endTime || now) - startTime;
+    const s = (ms / 1000).toFixed(1);
+    return <Text>{s}s</Text>;
 }
 
 function DiffViewer({ diffLines }: { diffLines: string[] }) {
-  const filtered = diffLines.filter((l: string) => !l.startsWith('===') && !l.startsWith('---') && !l.startsWith('+++') && !l.startsWith('Index:') && l.trim() !== '\\ No newline at end of file');
+    const filtered = diffLines.filter((l: string) => !l.startsWith('===') && !l.startsWith('---') && !l.startsWith('+++') && !l.startsWith('Index:') && l.trim() !== '\\ No newline at end of file');
 
-  let oldLine = 0;
-  let newLine = 0;
+    let oldLine = 0;
+    let newLine = 0;
 
-  return (
-    <Box flexDirection="column" paddingX={1}>
-      {filtered.map((line: string, idx: number) => {
-        if (line.startsWith('@@')) {
-          const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
-          if (match) {
-            oldLine = parseInt(match[1]);
-            newLine = parseInt(match[2]);
-          }
+    return (
+        <Box flexDirection="column" paddingX={1}>
+            {filtered.map((line: string, idx: number) => {
+                if (line.startsWith('@@')) {
+                    const match = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+                    if (match) {
+                        oldLine = parseInt(match[1]);
+                        newLine = parseInt(match[2]);
+                    }
 
-          let plusCount = 0;
-          let minusCount = 0;
-          for (let i = idx + 1; i < filtered.length; i++) {
-            if (filtered[i].startsWith('@@')) break;
-            if (filtered[i].startsWith('+')) plusCount++;
-            if (filtered[i].startsWith('-')) minusCount++;
-          }
+                    let plusCount = 0;
+                    let minusCount = 0;
+                    for (let i = idx + 1; i < filtered.length; i++) {
+                        if (filtered[i].startsWith('@@')) break;
+                        if (filtered[i].startsWith('+')) plusCount++;
+                        if (filtered[i].startsWith('-')) minusCount++;
+                    }
 
-          return (
-            <Box key={idx} paddingLeft={2} paddingY={1}>
-              <Text dimColor>·· </Text>
-              {minusCount > 0 && <Text color="red">-{minusCount} </Text>}
-              {plusCount > 0 && <Text color="green">+{plusCount} </Text>}
-              {(plusCount > 0 || minusCount > 0) ? <Text dimColor>lines</Text> : <Text dimColor>Context</Text>}
-            </Box>
-          );
-        }
+                    return (
+                        <Box key={idx} paddingLeft={2} paddingY={1}>
+                            <Text dimColor>·· </Text>
+                            {minusCount > 0 && <Text color="red">-{minusCount} </Text>}
+                            {plusCount > 0 && <Text color="green">+{plusCount} </Text>}
+                            {(plusCount > 0 || minusCount > 0) ? <Text dimColor>lines</Text> : <Text dimColor>Context</Text>}
+                        </Box>
+                    );
+                }
 
-        let oldCol = '';
-        let newCol = '';
-        if (line.startsWith('+')) {
-          newCol = String(newLine++);
-          const prefix = `${oldCol.padStart(4)} ${newCol.padStart(4)} │ `;
-          return (
-            <Box key={idx} flexDirection="row">
-              <Box width={12} flexShrink={0}><Text dimColor>{prefix}</Text></Box>
-              <Text color="greenBright" backgroundColor="#0d2a0d">{line}</Text>
-            </Box>
-          );
-        } else if (line.startsWith('-')) {
-          oldCol = String(oldLine++);
-          const prefix = `${oldCol.padStart(4)} ${newCol.padStart(4)} │ `;
-          return (
-            <Box key={idx} flexDirection="row">
-              <Box width={12} flexShrink={0}><Text dimColor>{prefix}</Text></Box>
-              <Text color="redBright" backgroundColor="#2a0d0d">{line}</Text>
-            </Box>
-          );
-        } else {
-          oldCol = String(oldLine++);
-          newCol = String(newLine++);
-          const prefix = `${oldCol.padStart(4)} ${newCol.padStart(4)} │ `;
-          return (
-            <Box key={idx} flexDirection="row">
-              <Box width={12} flexShrink={0}><Text dimColor>{prefix}</Text></Box>
-              <Text dimColor>{line}</Text>
-            </Box>
-          );
-        }
-      })}
-    </Box>
-  );
+                let oldCol = '';
+                let newCol = '';
+                if (line.startsWith('+')) {
+                    newCol = String(newLine++);
+                    const prefix = `${oldCol.padStart(4)} ${newCol.padStart(4)} │ `;
+                    return (
+                        <Box key={idx} flexDirection="row">
+                            <Box width={12} flexShrink={0}><Text dimColor>{prefix}</Text></Box>
+                            <Text color="greenBright" backgroundColor="#0d2a0d">{line}</Text>
+                        </Box>
+                    );
+                } else if (line.startsWith('-')) {
+                    oldCol = String(oldLine++);
+                    const prefix = `${oldCol.padStart(4)} ${newCol.padStart(4)} │ `;
+                    return (
+                        <Box key={idx} flexDirection="row">
+                            <Box width={12} flexShrink={0}><Text dimColor>{prefix}</Text></Box>
+                            <Text color="redBright" backgroundColor="#2a0d0d">{line}</Text>
+                        </Box>
+                    );
+                } else {
+                    oldCol = String(oldLine++);
+                    newCol = String(newLine++);
+                    const prefix = `${oldCol.padStart(4)} ${newCol.padStart(4)} │ `;
+                    return (
+                        <Box key={idx} flexDirection="row">
+                            <Box width={12} flexShrink={0}><Text dimColor>{prefix}</Text></Box>
+                            <Text dimColor>{line}</Text>
+                        </Box>
+                    );
+                }
+            })}
+        </Box>
+    );
 }
 
 const AVAILABLE_COMMANDS = [
-  { cmd: '/model', desc: 'Change the current model (e.g. /model gemini-1.5-pro)' },
-  { cmd: '/new', desc: 'Starts a brand new session and clears the screen' },
-  { cmd: '/init', desc: 'Analyze codebase and create PARALLAX.md' },
-  { cmd: '/compact', desc: 'Summarize and compress conversation history to save tokens' },
-  { cmd: '/load', desc: 'Loads or switches to a historical session memory' },
-  { cmd: '/skills', desc: 'Install new agent skills from skills.sh locally or globally' },
-  { cmd: '/commit', desc: 'Creates a commit with the current changes (model generated message), then pushes.' },
-  { cmd: '/commit:pr', desc: 'Creates a commit, pushes, and uses the GitHub CLI to open a pull request.' },
-  { cmd: '/commit:no-push', desc: 'Creates a commit with the current changes without pushing.' },
-  { cmd: '/parallax', desc: 'Spawns a Master Coordinator Agent to orchestrate subagents for a large task' }
+    { cmd: '/model', desc: 'Change the current model (e.g. /model gemini-1.5-pro)' },
+    { cmd: '/new', desc: 'Starts a brand new session and clears the screen' },
+    { cmd: '/init', desc: 'Analyze codebase and create PARALLAX.md' },
+    { cmd: '/compact', desc: 'Summarize and compress conversation history to save tokens' },
+    { cmd: '/load', desc: 'Loads or switches to a historical session memory' },
+    { cmd: '/skills', desc: 'Install new agent skills from skills.sh locally or globally' },
+    { cmd: '/commit', desc: 'Creates a commit with the current changes (model generated message), then pushes.' },
+    { cmd: '/commit:pr', desc: 'Creates a commit, pushes, and uses the GitHub CLI to open a pull request.' },
+    { cmd: '/commit:no-push', desc: 'Creates a commit with the current changes without pushing.' },
+    { cmd: '/parallax', desc: 'Spawns a Master Coordinator Agent to orchestrate subagents for a large task' }
 ];
 
 function ListPicker({ items, label, onSelect, onCancel }: { items: { id: string; label: string; detail?: string; group?: string }[], label: string, onSelect: (m: string) => void, onCancel: () => void }) {
-  const [index, setIndex] = useState(0);
-  const [query, setQuery] = useState('');
+    const [index, setIndex] = useState(0);
+    const [query, setQuery] = useState('');
 
-  const filteredItems = items.filter(m => m.label.toLowerCase().includes(query.toLowerCase()) || m.detail?.toLowerCase().includes(query.toLowerCase()) || m.group?.toLowerCase().includes(query.toLowerCase()));
+    const filteredItems = items.filter(m => m.label.toLowerCase().includes(query.toLowerCase()) || m.detail?.toLowerCase().includes(query.toLowerCase()) || m.group?.toLowerCase().includes(query.toLowerCase()));
 
-  useEffect(() => {
-    if (index >= filteredItems.length) {
-      setIndex(Math.max(0, filteredItems.length - 1));
-    }
-  }, [filteredItems, index]);
-
-  useInput((_input, key) => {
-    if (key.upArrow) {
-      setIndex((i: number) => Math.max(0, i - 1));
-      return;
-    }
-    if (key.downArrow) {
-      setIndex((i: number) => Math.min(filteredItems.length - 1, i + 1));
-      return;
-    }
-    if (key.return && filteredItems.length > 0) {
-      onSelect(filteredItems[index].id);
-      return;
-    }
-    if (key.escape || (key.ctrl && _input === 'c')) {
-      onCancel();
-      return;
-    }
-    if (key.backspace || key.delete) {
-      setQuery(q => q.slice(0, -1));
-      return;
-    }
-    if (_input && !key.meta && !key.ctrl && !key.leftArrow && !key.rightArrow) {
-      const char = _input.replace(/[\x00-\x1F\x7F-\x9F]/g, '');
-      if (char) {
-        setQuery(current => current + char);
-        setIndex(0);
-      }
-    }
-  });
-
-  let currentGroup = '';
-
-  return (
-    <Box flexDirection="column" marginTop={1} marginLeft={2}>
-      <Text color="magenta" bold>{label}</Text>
-      {query.length > 0 && (
-        <Box marginBottom={1} marginLeft={2}>
-          <Text color="cyan">Find: {query}█</Text>
-        </Box>
-      )}
-      {filteredItems.length === 0 && (
-        <Box marginLeft={2}>
-          <Text dimColor>No matches found.</Text>
-        </Box>
-      )}
-      {filteredItems.map((m, i) => {
-        const isSelected = i === index;
-        const showGroup = m.group && m.group !== currentGroup;
-        if (showGroup) {
-          currentGroup = m.group!;
+    useEffect(() => {
+        if (index >= filteredItems.length) {
+            setIndex(Math.max(0, filteredItems.length - 1));
         }
+    }, [filteredItems, index]);
 
-        return (
-          <Box key={m.id} flexDirection="column">
-            {showGroup && (
-              <Box marginTop={1} marginBottom={0}>
-                <Text color="gray" bold>── {m.group}</Text>
-              </Box>
-            )}
-            <Box flexDirection="row">
-              <Text color={isSelected ? 'cyan' : 'gray'} bold={isSelected}>
-                {isSelected ? '❯ ' : '  '}
-                {m.label}
-              </Text>
-              {m.detail && (
-                <Box marginLeft={2}>
-                  <Text dimColor italic>— "{m.detail}"</Text>
+    useInput((_input, key) => {
+        if (key.upArrow) {
+            setIndex((i: number) => Math.max(0, i - 1));
+            return;
+        }
+        if (key.downArrow) {
+            setIndex((i: number) => Math.min(filteredItems.length - 1, i + 1));
+            return;
+        }
+        if (key.return && filteredItems.length > 0) {
+            onSelect(filteredItems[index].id);
+            return;
+        }
+        if (key.escape || (key.ctrl && _input === 'c')) {
+            onCancel();
+            return;
+        }
+        if (key.backspace || key.delete) {
+            setQuery(q => q.slice(0, -1));
+            return;
+        }
+        if (_input && !key.meta && !key.ctrl && !key.leftArrow && !key.rightArrow) {
+            const char = _input.replace(/[\x00-\x1F\x7F-\x9F]/g, '');
+            if (char) {
+                setQuery(current => current + char);
+                setIndex(0);
+            }
+        }
+    });
+
+    let currentGroup = '';
+
+    return (
+        <Box flexDirection="column" marginTop={1} marginLeft={2}>
+            <Text color="magenta" bold>{label}</Text>
+            {query.length > 0 && (
+                <Box marginBottom={1} marginLeft={2}>
+                    <Text color="cyan">Find: {query}█</Text>
                 </Box>
-              )}
+            )}
+            {filteredItems.length === 0 && (
+                <Box marginLeft={2}>
+                    <Text dimColor>No matches found.</Text>
+                </Box>
+            )}
+            {filteredItems.map((m, i) => {
+                const isSelected = i === index;
+                const showGroup = m.group && m.group !== currentGroup;
+                if (showGroup) {
+                    currentGroup = m.group!;
+                }
+
+                return (
+                    <Box key={m.id} flexDirection="column">
+                        {showGroup && (
+                            <Box marginTop={1} marginBottom={0}>
+                                <Text color="gray" bold>── {m.group}</Text>
+                            </Box>
+                        )}
+                        <Box flexDirection="row">
+                            <Text color={isSelected ? 'cyan' : 'gray'} bold={isSelected}>
+                                {isSelected ? '❯ ' : '  '}
+                                {m.label}
+                            </Text>
+                            {m.detail && (
+                                <Box marginLeft={2}>
+                                    <Text dimColor italic>— "{m.detail}"</Text>
+                                </Box>
+                            )}
+                        </Box>
+                    </Box>
+                );
+            })}
+            <Box marginTop={1}>
+                <Text dimColor>Use Up/Down arrows to navigate, type to search, Enter to select.</Text>
             </Box>
-          </Box>
-        );
-      })}
-      <Box marginTop={1}>
-        <Text dimColor>Use Up/Down arrows to navigate, type to search, Enter to select.</Text>
-      </Box>
-    </Box>
-  );
+        </Box>
+    );
 }
 
 function SafeTextInput({ value, onChange, onSubmit, onCancel }: { value: string, onChange: (v: string) => void, onSubmit: (v: string) => void, onCancel?: () => void }) {
-  const [cursor, setCursor] = useState(value.length);
+    const [cursor, setCursor] = useState(value.length);
 
-  useEffect(() => {
-    if (cursor > value.length) setCursor(value.length);
-  }, [value, cursor]);
+    useEffect(() => {
+        if (cursor > value.length) setCursor(value.length);
+    }, [value, cursor]);
 
-  useInput((input, key) => {
-    if (key.upArrow || key.downArrow || key.tab || (key.shift && key.tab)) return;
-    if (key.ctrl || key.meta) return;
-    if (key.escape) {
-      if (onCancel) onCancel();
-      return;
-    }
-    if (key.return) {
-      onSubmit(value);
-      return;
-    }
+    useInput((input, key) => {
+        if (key.upArrow || key.downArrow || key.tab || (key.shift && key.tab)) return;
+        if (key.ctrl || key.meta) return;
+        if (key.escape) {
+            if (onCancel) onCancel();
+            return;
+        }
+        if (key.return) {
+            onSubmit(value);
+            return;
+        }
 
-    if (key.leftArrow) {
-      setCursor(c => Math.max(0, c - 1));
-    } else if (key.rightArrow) {
-      setCursor(c => Math.min(value.length, c + 1));
-    } else if (key.backspace || key.delete) {
-      if (cursor > 0) {
-        onChange(value.slice(0, cursor - 1) + value.slice(cursor));
-        setCursor(c => c - 1);
-      }
-    } else if (input.length > 0) {
-      const sanitized = input.replace(/[\x00-\x1F\x7F-\x9F]/g, '');
-      if (sanitized.length > 0) {
-        onChange(value.slice(0, cursor) + sanitized + value.slice(cursor));
-        setCursor(c => c + sanitized.length);
-      }
-    }
-  });
+        if (key.leftArrow) {
+            setCursor(c => Math.max(0, c - 1));
+        } else if (key.rightArrow) {
+            setCursor(c => Math.min(value.length, c + 1));
+        } else if (key.backspace || key.delete) {
+            if (cursor > 0) {
+                onChange(value.slice(0, cursor - 1) + value.slice(cursor));
+                setCursor(c => c - 1);
+            }
+        } else if (input.length > 0) {
+            const sanitized = input.replace(/[\x00-\x1F\x7F-\x9F]/g, '');
+            if (sanitized.length > 0) {
+                onChange(value.slice(0, cursor) + sanitized + value.slice(cursor));
+                setCursor(c => c + sanitized.length);
+            }
+        }
+    });
 
-  const before = value.slice(0, cursor);
-  const at = cursor < value.length ? value[cursor] : ' ';
-  const after = cursor < value.length ? value.slice(cursor + 1) : '';
+    const before = value.slice(0, cursor);
+    const at = cursor < value.length ? value[cursor] : ' ';
+    const after = cursor < value.length ? value.slice(cursor + 1) : '';
 
-  return (
-    <Text>
-      {before}
-      <Text inverse>{at}</Text>
-      {after}
-    </Text>
-  );
+    return (
+        <Text>
+            {before}
+            <Text inverse>{at}</Text>
+            {after}
+        </Text>
+    );
 }
 
 export interface AppProps {
-  initialPrompt?: string;
-  initialSessionId?: string;
-  onExitCb?: (info: { sessionId: string; lastMsg: string; killedCount: number }) => void;
-  initialYolo?: boolean;
-  initialVerbose?: boolean;
+    initialPrompt?: string;
+    initialSessionId?: string;
+    onExitCb?: (info: { sessionId: string; lastMsg: string; killedCount: number }) => void;
+    initialYolo?: boolean;
+    initialVerbose?: boolean;
 }
 
 export default function App({ initialPrompt, initialSessionId, onExitCb, initialYolo = false, initialVerbose = false }: AppProps = {}) {
-  const { exit } = useApp();
-  const [sessionId, setSessionId] = useState<string>(() => crypto.randomBytes(4).toString('hex'));
-  const HISTORY_FILE = path.join(os.homedir(), '.parallax', `${sessionId}.json`);
-  const [currentModel, setCurrentModel] = useState(MODEL);
-  const [mode, setMode] = useState<AppMode>('agent');
-  const [query, setQuery] = useState('');
-  const [blocks, setBlocks] = useState<MessageBlock[]>([]);
-  const [messages, setMessages] = useState<any[]>([]);
-  const [isStreaming, setIsStreaming] = useState(false);
-  const [toolsExpanded, setToolsExpanded] = useState(initialVerbose);
-  const [exitPrompted, setExitPrompted] = useState(false);
-  const [isExiting, setIsExiting] = useState(false);
-  const [isSelectingModel, setIsSelectingModel] = useState(false);
-  const [isFetchingModels, setIsFetchingModels] = useState(false);
-  const [availableModels, setAvailableModels] = useState<ModelListing[]>([]);
-  const [isSelectingSession, setIsSelectingSession] = useState(false);
-  const [isSelectingSkillTarget, setIsSelectingSkillTarget] = useState(false);
-  const [isEnteringSkillName, setIsEnteringSkillName] = useState<{ target: 'local' | 'global' } | null>(null);
-  const [skillNameInput, setSkillNameInput] = useState('');
-  const [availableSessions, setAvailableSessions] = useState<{ id: string; label: string; detail?: string }[]>([]);
-  const [abortController, setAbortController] = useState<AbortController | null>(null);
-  const [commandIndex, setCommandIndex] = useState(0);
-  const hasInitialized = useRef(false);
-  const [yoloMode, setYoloMode] = useState(initialYolo);
-  const yoloModeRef = useRef(yoloMode);
-  useEffect(() => { yoloModeRef.current = yoloMode; }, [yoloMode]);
-  const [pendingConfirm, setPendingConfirm] = useState<{ id: string; name: string; input: any; resolve: (b: boolean) => void } | null>(null);
-  const [combinedTools, setCombinedTools] = useState<ToolSet>(allTools);
-  const [skills, setSkills] = useState<SkillSummary[]>([]);
+    const { exit } = useApp();
+    const [sessionId, setSessionId] = useState<string>(() => crypto.randomBytes(4).toString('hex'));
+    const HISTORY_FILE = path.join(os.homedir(), '.parallax', `${sessionId}.json`);
+    const [currentModel, setCurrentModel] = useState(MODEL);
+    const [mode, setMode] = useState<AppMode>('agent');
+    const [query, setQuery] = useState('');
+    const [blocks, setBlocks] = useState<MessageBlock[]>([]);
+    const [committedBlocks, setCommittedBlocks] = useState<MessageBlock[]>([]);
+    const [messages, setMessages] = useState<any[]>([]);
+    const [isStreaming, setIsStreaming] = useState(false);
+    const [toolsExpanded, setToolsExpanded] = useState(initialVerbose);
+    const [exitPrompted, setExitPrompted] = useState(false);
+    const [isExiting, setIsExiting] = useState(false);
+    const [isSelectingModel, setIsSelectingModel] = useState(false);
+    const [isFetchingModels, setIsFetchingModels] = useState(false);
+    const [availableModels, setAvailableModels] = useState<ModelListing[]>([]);
+    const [isSelectingSession, setIsSelectingSession] = useState(false);
+    const [isSelectingSkillTarget, setIsSelectingSkillTarget] = useState(false);
+    const [isEnteringSkillName, setIsEnteringSkillName] = useState<{ target: 'local' | 'global' } | null>(null);
+    const [skillNameInput, setSkillNameInput] = useState('');
+    const [availableSessions, setAvailableSessions] = useState<{ id: string; label: string; detail?: string }[]>([]);
+    const [abortController, setAbortController] = useState<AbortController | null>(null);
+    const [commandIndex, setCommandIndex] = useState(0);
+    const hasInitialized = useRef(false);
+    const [yoloMode, setYoloMode] = useState(initialYolo);
+    const yoloModeRef = useRef(yoloMode);
+    useEffect(() => { yoloModeRef.current = yoloMode; }, [yoloMode]);
+    const [pendingConfirm, setPendingConfirm] = useState<{ id: string; name: string; input: any; resolve: (b: boolean) => void } | null>(null);
+    const [combinedTools, setCombinedTools] = useState<ToolSet>(allTools);
+    const [skills, setSkills] = useState<SkillSummary[]>([]);
 
-  useEffect(() => {
-    const wsSkills = loadWorkspaceSkills(process.cwd());
-    setSkills(wsSkills);
+    useEffect(() => {
+        const wsSkills = loadWorkspaceSkills(process.cwd());
+        setSkills(wsSkills);
 
-    const loadSkillTool: ToolDefinition = {
-      description: 'Load the full contents of a SKILL.md file for a specific skill. Call this if you need to read the full instructions for an advertised skill.',
-      requiresConfirmation: false,
-      parameters: {
-        type: 'object',
-        properties: { name: { type: 'string', description: 'Name of the skill to load' } },
-        required: ['name']
-      },
-      execute: async (args: any) => {
-        const skill = wsSkills.find(s => s.name === args.name);
-        if (!skill) return { error: `Skill ${args.name} not found.` };
-        return { content: fs.readFileSync(skill.filePath, 'utf8') };
-      }
-    };
-
-    loadMcpTools().then(mcpTools => {
-      setCombinedTools(prev => ({ ...prev, loadSkill: loadSkillTool, ...mcpTools }));
-    });
-  }, []);
-
-  useEffect(() => { setCommandIndex(0); }, [query]);
-
-  const loadSession = (id: string) => {
-    try {
-      const file = path.join(os.homedir(), '.parallax', `${id}.json`);
-      if (fs.existsSync(file)) {
-        const data = JSON.parse(fs.readFileSync(file, 'utf8'));
-        setSessionId(id);
-
-        let loadedBlocks = data.blocks || [];
-
-        // Correct legacy ordering: older versions of Parallax mistakenly placed grouped
-        // 'tool' blocks before the 'assistant' blocks in the JSON.
-        for (let i = 0; i < loadedBlocks.length - 1; i++) {
-          if (loadedBlocks[i].type === 'tool' && loadedBlocks[i + 1].type === 'assistant') {
-            const temp = loadedBlocks[i];
-            loadedBlocks[i] = loadedBlocks[i + 1];
-            loadedBlocks[i + 1] = temp;
-            i++; // Skip the next index since we just swapped it
-          }
-        }
-
-        let flattenedBlocks: MessageBlock[] = [];
-        for (const b of loadedBlocks) {
-          if (b.type === 'tool') {
-            for (const tc of b.calls) {
-              flattenedBlocks.push({ type: 'tool-call', id: tc.id || crypto.randomUUID(), call: tc });
+        const loadSkillTool: ToolDefinition = {
+            description: 'Load the full contents of a SKILL.md file for a specific skill. Call this if you need to read the full instructions for an advertised skill.',
+            requiresConfirmation: false,
+            parameters: {
+                type: 'object',
+                properties: { name: { type: 'string', description: 'Name of the skill to load' } },
+                required: ['name']
+            },
+            execute: async (args: any) => {
+                const skill = wsSkills.find(s => s.name === args.name);
+                if (!skill) return { error: `Skill ${args.name} not found.` };
+                return { content: fs.readFileSync(skill.filePath, 'utf8') };
             }
-          } else {
-            flattenedBlocks.push({ ...b, id: b.id || crypto.randomUUID() });
-          }
-        }
-
-        setBlocks(flattenedBlocks);
-        setMessages(data.messages || []);
-      }
-      setIsSelectingSession(false);
-    } catch (err: any) {
-      setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: crypto.randomUUID(), text: `Failed to load: ${err.message}` }]);
-      setIsSelectingSession(false);
-    }
-  };
-
-  useEffect(() => {
-    if (sessionId) {
-      fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
-      if (messages.length > 0) {
-        fs.writeFileSync(HISTORY_FILE, JSON.stringify({ blocks, messages }, null, 2));
-      }
-    }
-  }, [blocks, messages, sessionId]);
-
-  useInput((input: string, key: any) => {
-    if (key.shift && key.tab) {
-      setYoloMode(v => !v);
-      return;
-    }
-
-    if (pendingConfirm) {
-      if (input.toLowerCase() === 'y' || key.return) {
-        pendingConfirm.resolve(true);
-        setPendingConfirm(null);
-      } else if (input.toLowerCase() === 'n' || key.escape || (key.ctrl && input === 'c')) {
-        pendingConfirm.resolve(false);
-        setPendingConfirm(null);
-        if (key.ctrl && input === 'c') {
-          if (isStreaming && abortController) {
-            abortController.abort();
-            setIsStreaming(false);
-          } else {
-            setExitPrompted(true);
-          }
-        } else if (key.escape) {
-          if (isStreaming && abortController) {
-            abortController.abort();
-            setIsStreaming(false);
-          }
-        }
-      }
-      return;
-    }
-
-    if (exitPrompted) {
-      if (key.ctrl && input === 'c') {
-        let lastMsg = 'No previous messages.';
-        for (let i = blocks.length - 1; i >= 0; i--) {
-          const b: any = blocks[i];
-          if ((b.type === 'user' || b.type === 'assistant') && b.text) {
-            const words = b.text.trim().split(/\s+/);
-            lastMsg = words.slice(0, 5).join(' ') + (words.length > 5 ? '...' : '');
-            break;
-          }
-        }
-
-        let killedCount = 0;
-        for (const [id, cmd] of activeCommands.entries()) {
-          try {
-            cmd.process.kill();
-            killedCount++;
-          } catch (e) { }
-        }
-
-        if (onExitCb) {
-          onExitCb({ sessionId, lastMsg, killedCount });
-        }
-
-        setIsExiting(true);
-        setTimeout(() => exit(), 5);
-      } else {
-        setExitPrompted(false);
-      }
-      return;
-    }
-
-    if (!isStreaming && !isSelectingModel && !isFetchingModels && !isSelectingSession && !isSelectingSkillTarget && !isEnteringSkillName) {
-      if (query.startsWith('/')) {
-        const filtered = AVAILABLE_COMMANDS.filter(c => c.cmd.startsWith(query.toLowerCase().split(' ')[0]));
-        if (key.upArrow) {
-          setCommandIndex((i: number) => Math.max(0, i - 1));
-          return;
-        }
-        if (key.downArrow) {
-          setCommandIndex((i: number) => Math.min(filtered.length - 1, i + 1));
-          return;
-        }
-        if (key.tab && filtered.length > 0) {
-          setQuery(filtered[commandIndex].cmd + ' ');
-          return;
-        }
-      }
-
-      if (key.tab) {
-        setMode(prev => prev === 'agent' ? 'plan' : prev === 'plan' ? 'debug' : 'agent');
-        return;
-      }
-    }
-
-    if (key.ctrl && (input === 'o' || input === '\x0f')) {
-      setToolsExpanded(v => !v);
-      return;
-    } else if (key.ctrl && input === 'c') {
-      if (isStreaming && abortController) {
-        abortController.abort();
-        setIsStreaming(false);
-        const interruptId = crypto.randomUUID();
-        const interruptMsg = '[System: The user interrupted / abruptly stopped the agent iteration stream.]';
-        setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: interruptId, text: interruptMsg }]);
-        setMessages((prev: any[]) => [...prev, { role: 'user', parts: [{ text: interruptMsg }] }]);
-      } else {
-        setExitPrompted(true);
-      }
-    } else if (key.escape) {
-      if (isStreaming && abortController) {
-        abortController.abort();
-        setIsStreaming(false);
-        const interruptId = crypto.randomUUID();
-        const interruptMsg = '[System: The user interrupted / abruptly stopped the agent iteration stream.]';
-        setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: interruptId, text: interruptMsg }]);
-        setMessages((prev: any[]) => [...prev, { role: 'user', parts: [{ text: interruptMsg }] }]);
-      }
-    }
-  });
-
-  const handleSubmit = useCallback(
-    async (txt: string) => {
-      if (!txt.trim() || isStreaming) return;
-
-      let cmd = txt.trim().toLowerCase();
-      let parts = txt.trim().split(/\s+/);
-      let args = parts.slice(1);
-      let sendUserText = txt;
-      let displayUserText = txt;
-
-      setQuery('');
-
-      if (cmd.startsWith('/')) {
-        let command = parts[0].toLowerCase();
-
-        const filtered = AVAILABLE_COMMANDS.filter(c => c.cmd.startsWith(command));
-        if (filtered.length > 0 && commandIndex < filtered.length && command !== filtered[commandIndex].cmd) {
-          command = filtered[commandIndex].cmd;
-        }
-
-        if (command === '/') {
-          return; // Ignore isolated slashes
-        }
-        if (command === '/model') {
-          if (args[0]) {
-            setCurrentModel(args[0]);
-            setBlocks((prev: MessageBlock[]) => [...prev, { type: 'assistant', id: crypto.randomUUID(), text: `Model changed to ${args[0]}` }]);
-          } else {
-            setIsFetchingModels(true);
-            fetchAvailableModels().then(models => {
-              setAvailableModels(models);
-              setIsFetchingModels(false);
-              setIsSelectingModel(true);
-            }).catch(() => {
-              setIsFetchingModels(false);
-            });
-          }
-          return;
-        } else if (command === '/new') {
-          const freshId = crypto.randomBytes(4).toString('hex');
-          setSessionId(freshId);
-          setBlocks([{ type: 'assistant', id: crypto.randomUUID(), text: `Created new session: ${freshId}` }]);
-          setMessages([]);
-          return;
-        } else if (command === '/init') {
-          displayUserText = '/init';
-          sendUserText = "CRITICAL INSTRUCTION: Analyze the entire codebase in the current directory. Generate a 70-120 line comprehensive description of the codebase including architectural details, and write it to 'PARALLAX.md'. This file will be used as the agent's system prompt on subsequent initializations.";
-        } else if (command === '/commit' || command === '/commit:pr' || command === '/commit:no-push') {
-          displayUserText = command;
-          if (command === '/commit:pr') {
-            sendUserText = "CRITICAL INSTRUCTION: Analyze the changes made in this session. Generate a commit message and commit them locally. To open a PR, check if the user has push access to origin. If they do not, use the GitHub CLI to autonomously fork the repository and push to the fork instead. Finally, use `gh pr create --fill` to submit the Pull Request. Ensure all `gh` commands are run non-interactively to prevent terminal hanging.";
-          } else if (command === '/commit:no-push') {
-            sendUserText = "CRITICAL INSTRUCTION: Analyze the changes made in this session. Generate a commit message for the current changes and commit them locally. Do NOT push to origin.";
-          } else {
-            sendUserText = "CRITICAL INSTRUCTION: Analyze the changes made in this session. Generate a commit message for the current changes. Afterwards commit with that message and push to origin.";
-          }
-        } else if (command === '/parallax') {
-          setCurrentModel('gemini:gemini-3.1-pro-preview');
-          const objective = args.join(' ');
-          displayUserText = `/parallax ${objective}`;
-          sendUserText = `CRITICAL INSTRUCTION: You are the Master Coordinator Agent. Your objective is: "${objective}".\nYou MUST NOT perform simple implementations directly. Instead, break this objective down into smaller tasks and use your \`subagent\` tool to spawn smaller execution agents to perform each sub-task. You MUST spawn all independent subagents concurrently in a SINGLE turn using parallel tool calls. Do not wait for one to finish before starting another unless they have strict dependencies. Coordinate their results and compile the complete solution.`;
-        } else if (command === '/compact') {
-          const prompt = "CRITICAL INSTRUCTION: Provide an in-depth, highly comprehensive summary of our ENTIRE conversation history up to this point. Include all relevant technical context, code paths, goals, and decisions. This summary will be used to replace our entire context window to save tokens, so ensure no critical information is lost.";
-          setBlocks((prev: MessageBlock[]) => [...prev, { type: 'user', id: crypto.randomUUID(), text: '/compact' }, { type: 'assistant', id: crypto.randomUUID(), text: '' }]);
-
-          const provider = ProviderFactory.create(currentModel);
-          const newMessages = [...messages, provider.createUserMessage(prompt)];
-          setMessages(newMessages); // Set temporarily so stream can evaluate it
-          setIsStreaming(true);
-
-          setTimeout(async () => {
-            let fullText = '';
-            try {
-              const compactAgent = new ToolLoopAgent({ provider, tools: combinedTools, systemInstruction: "You are a coding assistant." });
-              const stream = compactAgent.stream(newMessages);
-              for await (const part of stream) {
-                if (part.type === 'text-delta') {
-                  fullText += part.text;
-                  setBlocks((prev: MessageBlock[]) => {
-                    const next = [...prev];
-                    const last = next[next.length - 1];
-                    if (last.type === 'assistant') last.text = fullText;
-                    return next;
-                  });
-                }
-              }
-
-              // Done! Nuke the context
-              setBlocks([{ type: 'assistant', id: crypto.randomUUID(), text: `*[History Compacted]*\n\n${fullText}` }]);
-              setMessages([
-                provider.createUserMessage("Here is the comprehensive summary of our previous conversation up to this point:\n\n" + fullText),
-                { role: 'model', parts: [{ text: "Understood. I have fully internalized this historical context and am ready to proceed with your next instructions." }] } as any
-              ]);
-            } catch (err: any) {
-              setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: crypto.randomUUID(), text: `Compact failed: ${err.message}` }]);
-            } finally {
-              setIsStreaming(false);
-            }
-          }, 0);
-          return;
-        } else if (command === '/load') {
-          if (!args[0]) {
-            try {
-              const dir = path.join(os.homedir(), '.parallax');
-              if (fs.existsSync(dir)) {
-                let items = fs.readdirSync(dir).filter(f => f.endsWith('.json')).map(f => {
-                  const id = f.replace('.json', '');
-                  let detail = '';
-                  try {
-                    const filePath = path.join(dir, f);
-                    const stat = fs.statSync(filePath);
-                    const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-                    if (!data.messages || data.messages.length === 0) {
-                      try { fs.unlinkSync(filePath); } catch { } // Cleanup empty sessions
-                      return null;
-                    }
-                    const blks = data.blocks || [];
-                    for (let i = blks.length - 1; i >= 0; i--) {
-                      if (blks[i].type === 'user' || blks[i].type === 'assistant') {
-                        let text = blks[i].text.split('\n')[0];
-                        if (text.length > 55) text = text.slice(0, 55) + '...';
-                        detail = text.trim();
-                        break;
-                      }
-                    }
-                    const dateStr = new Date(stat.mtimeMs).toLocaleString();
-                    return { id, label: `${id}  [${dateStr}]`, detail, mtimeMs: stat.mtimeMs };
-                  } catch {
-                    return null;
-                  }
-                }).filter(Boolean) as { id: string; label: string; detail: string; mtimeMs?: number }[];
-
-                items.sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
-
-                if (items.length === 0) items = [{ id: sessionId, label: `${sessionId}  [New]`, detail: '' }];
-                setAvailableSessions(items);
-                setIsSelectingSession(true);
-              }
-            } catch { }
-            return;
-          }
-          loadSession(args[0]);
-          return;
-        } else if (command === '/skills') {
-          setIsSelectingSkillTarget(true);
-          return;
-        } else if (command === '/skills-install') {
-          const target = args[0] || 'local';
-          const skillStr = args.slice(1).join('').replace(/\s+/g, '').trim();
-          const targetDir = target === 'global' ? path.join(os.homedir(), '.agents') : path.join(process.cwd(), '.agents');
-
-          displayUserText = `/skills add ${skillStr} (${target})`;
-          sendUserText = `CRITICAL INSTRUCTION: You must run the following bash command using your tool to install a skill for the user:\n\`\`\`bash\nnpx skills add -y "${skillStr}"\n\`\`\`\nDo not ask for confirmation, just run it.`;
-        } else if (command === '/help') {
-          const helpText = AVAILABLE_COMMANDS.map(c => `**${c.cmd}** - ${c.desc}`).join('\n');
-          setBlocks((prev: MessageBlock[]) => [...prev, { type: 'assistant', id: crypto.randomUUID(), text: helpText }]);
-          return;
-        } else {
-          setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: crypto.randomUUID(), text: `Unknown command: ${command}` }]);
-          return;
-        }
-      }
-
-      setBlocks((prev: MessageBlock[]) => [...prev, { type: 'user', id: crypto.randomUUID(), text: displayUserText }]);
-
-      const provider = ProviderFactory.create(currentModel);
-
-      let sysInstruct = getSystemPrompt();
-
-      const parallaxMdPath = path.join(process.cwd(), 'PARALLAX.md');
-      if (fs.existsSync(parallaxMdPath)) {
-        sysInstruct += `\n\n# Project Architecture (PARALLAX.md)\n${fs.readFileSync(parallaxMdPath, 'utf8')}`;
-      }
-
-      if (skills.length > 0) {
-        sysInstruct += `\n\n# Available Skills\nYou have access to the following specialized skills. To use them, call the \`loadSkill\` tool with the name of the skill to retrieve its full instructions.\n`;
-        for (const skill of skills) {
-          sysInstruct += `\n${skill.frontmatter}\n`;
-        }
-      }
-
-      if (mode === 'plan') {
-        sysInstruct = `You are a planner. Before writing any code or taking actions, write a comprehensive plan.\n${sysInstruct}`;
-      } else if (mode === 'debug') {
-        sysInstruct = `You are a debugging assistant. Focus on finding bugs, reasoning about the state, and adding logs.\n${sysInstruct}`;
-      }
-
-      const agent = new ToolLoopAgent({
-        provider,
-        tools: combinedTools,
-        systemInstruction: sysInstruct,
-        onConfirm: async (tc) => {
-          if (yoloModeRef.current) return true;
-          return new Promise<boolean>((resolve) => {
-            setPendingConfirm({ ...tc, resolve });
-          });
-        }
-      });
-
-      const newMessages = [...messages, provider.createUserMessage(sendUserText)];
-      setMessages(newMessages);
-      setIsStreaming(true);
-      const ac = new AbortController();
-      setAbortController(ac);
-
-      let fullText = '';
-      let thinkingText = '';
-      let thinkingBlockIndex = -1;
-      let assistantBlockIndex = -1;
-
-      try {
-        const stream = agent.stream(newMessages);
-        for await (const part of stream) {
-          if (ac.signal.aborted) break;
-
-          if (part.type === 'thinking-delta') {
-            thinkingText += part.text;
-            const currentThinking = thinkingText;
-            setBlocks((prev) => {
-              let updated = [...prev];
-              if (thinkingBlockIndex === -1) {
-                thinkingBlockIndex = updated.length;
-                updated.push({ type: 'thinking', id: crypto.randomUUID(), text: currentThinking, startTime: Date.now() });
-              } else {
-                updated[thinkingBlockIndex] = { ...(updated[thinkingBlockIndex] as any), text: currentThinking } as any;
-              }
-              return updated;
-            });
-          } else if (part.type === 'text-delta') {
-            fullText += part.text;
-            const currentText = fullText;
-            setBlocks((prev) => {
-              let updated = [...prev];
-              if (thinkingBlockIndex !== -1 && !(updated[thinkingBlockIndex] as any).endTime) {
-                updated[thinkingBlockIndex] = { ...(updated[thinkingBlockIndex] as any), endTime: Date.now() } as any;
-              }
-              if (assistantBlockIndex === -1) {
-                assistantBlockIndex = updated.length;
-                updated.push({ type: 'assistant', id: crypto.randomUUID(), text: currentText });
-              } else {
-                updated[assistantBlockIndex] = { ...(updated[assistantBlockIndex] as any), text: currentText } as any;
-              }
-              return updated;
-            });
-          } else if (part.type === 'tool-call') {
-            const tc: ToolCallInfo = {
-              id: part.toolCallId || crypto.randomUUID(),
-              name: part.toolName || '',
-              args: part.input as Record<string, unknown>,
-              status: 'calling',
-            };
-            setBlocks((prev) => {
-              let updated = [...prev];
-              if (thinkingBlockIndex !== -1 && !(updated[thinkingBlockIndex] as any).endTime) {
-                updated[thinkingBlockIndex] = { ...(updated[thinkingBlockIndex] as any), endTime: Date.now() } as any;
-              }
-              updated.push({ type: 'tool-call', id: tc.id, call: tc });
-              return updated;
-            });
-          } else if (part.type === 'tool-result') {
-            setBlocks((prev: MessageBlock[]) => {
-              const updated = [...prev];
-              for (let i = updated.length - 1; i >= 0; i--) {
-                const b = updated[i];
-                if (b.type === 'tool-call' && b.call.id === part.toolCallId) {
-                  updated[i] = { type: 'tool-call', id: b.id, call: { ...b.call, status: 'done', result: part.output } };
-                  break;
-                }
-              }
-              return updated;
-            });
-          } else if (part.type === 'finish-step') {
-            setBlocks((prev) => {
-              let updated = [...prev];
-              if (thinkingBlockIndex !== -1 && !(updated[thinkingBlockIndex] as any).endTime) {
-                updated[thinkingBlockIndex] = { ...(updated[thinkingBlockIndex] as any), endTime: Date.now() } as any;
-              }
-              return updated;
-            });
-            fullText = '';
-            thinkingText = '';
-            thinkingBlockIndex = -1;
-            assistantBlockIndex = -1;
-          }
-        }
-        if (!ac.signal.aborted) setMessages([...newMessages]);
-      } catch (err: any) {
-        setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: crypto.randomUUID(), text: err?.message || String(err) }]);
-      } finally {
-        setIsStreaming(false);
-        setAbortController(null);
-      }
-    },
-    [messages, isStreaming, currentModel, commandIndex, combinedTools, mode]
-  );
-
-  useEffect(() => {
-    if (initialSessionId && !hasInitialized.current) {
-      hasInitialized.current = true;
-      loadSession(initialSessionId);
-      if (initialPrompt) {
-        // slight delay to ensure messages loaded before submitting
-        setTimeout(() => handleSubmit(initialPrompt), 50);
-      }
-    } else if (initialPrompt && !hasInitialized.current) {
-      hasInitialized.current = true;
-      handleSubmit(initialPrompt);
-    }
-  }, [initialPrompt, initialSessionId, handleSubmit]);
-
-  return (
-    <Box flexDirection="column" padding={1} marginLeft={1}>
-      <Box flexDirection="column" marginBottom={1}>
-        <Text bold>
-          <Text color="cyan" bold>⚡ Parallax</Text>
-        </Text>
-        <Text dimColor>Type a message to start.</Text>
-      </Box>
-
-      {(() => {
-        const groupedBlocks: any[] = [];
-        let currentGroup: any[] = [];
-        for (let i = 0; i < blocks.length; i++) {
-          const b = blocks[i];
-          if (b.type === 'tool-call') {
-            currentGroup.push(b);
-          } else {
-            if (currentGroup.length > 1) {
-              groupedBlocks.push({ type: 'tool-group', id: currentGroup[0].id + '-group', calls: currentGroup });
-            } else if (currentGroup.length === 1) {
-              groupedBlocks.push(currentGroup[0]);
-            }
-            currentGroup = [];
-            groupedBlocks.push(b);
-          }
-        }
-        if (currentGroup.length > 1) {
-          groupedBlocks.push({ type: 'tool-group', id: currentGroup[0].id + '-group', calls: currentGroup });
-        } else if (currentGroup.length === 1) {
-          groupedBlocks.push(currentGroup[0]);
-        }
-
-        const renderToolCall = (block: any, key: string | number) => {
-          const tc = block.call;
-
-          let diffLines: string[] | undefined;
-          if (tc.status === 'done') {
-            if (tc.result && typeof tc.result === 'object' && (tc.result as any).diff) {
-              diffLines = String((tc.result as any).diff).split('\n');
-            } else if (tc.name === 'editFile' && tc.args.oldText !== undefined && tc.args.newText !== undefined) {
-              const patch = diff.createPatch(String(tc.args.path) || 'file', String(tc.args.oldText), String(tc.args.newText));
-              diffLines = patch.split('\n');
-            }
-          }
-
-          return (
-            <Box key={key} marginLeft={2} flexDirection="column">
-              <Box flexDirection="row">
-                {tc.status === 'calling'
-                  ? <Text color="yellow"><Spinner type="dots" /> </Text>
-                  : tc.result && typeof tc.result === 'object' && (tc.result as any).success === false
-                    ? <Text color="red">✖ </Text>
-                    : <Text color="green">✔ </Text>}
-                <Text color="cyan">{getToolLabel(tc.name, tc.args, tc.status as any, tc.result)}</Text>
-              </Box>
-              {toolsExpanded && (
-                <Box marginLeft={4} flexDirection="column" marginTop={0}>
-                  <Text dimColor wrap="truncate-end">Args: {JSON.stringify(tc.args).slice(0, 300)}</Text>
-                  {tc.status === 'done' && tc.result !== undefined && typeof tc.result === 'object' && (tc.result as any).success !== false && tc.name !== 'editFile' && (
-                    <Text dimColor wrap="truncate-end">Output: {JSON.stringify(tc.result).slice(0, 300)}</Text>
-                  )}
-                </Box>
-              )}
-              {tc.status === 'done' && tc.result && typeof tc.result === 'object' && (tc.result as any).success === false ? (
-                <Box marginLeft={4} flexDirection="column" marginTop={0}>
-                  <Text color="red">Error: {String((tc.result as any).error || 'Unknown failure')}</Text>
-                </Box>
-              ) : null}
-              {diffLines && typeof tc.result === 'object' && (tc.result as any).success !== false ? (
-                <Box marginLeft={4} flexDirection="column" marginTop={1}>
-                  <DiffViewer diffLines={diffLines} />
-                </Box>
-              ) : null}
-            </Box>
-          );
         };
 
-        return groupedBlocks.map((block: any, i: number) => {
-          const key = block.id || i;
-          if (block.type === 'user') return <Box key={key}><Text color="green" bold>❯ </Text><Text>{block.text}</Text></Box>;
-          if (block.type === 'error') return <Box key={key}><Text color="red">✖ Error: {block.text}</Text></Box>;
-          if (block.type === 'thinking') {
-            const isExpanded = toolsExpanded;
-            const thinkingText = (block as any).endTime ? (
-              <Text>💭 Thought for <Timer startTime={(block as any).startTime} endTime={(block as any).endTime} /></Text>
-            ) : (
-              <Text>💭 Thinking (<Timer startTime={(block as any).startTime} />)</Text>
-            );
-
-            return (
-              <Box key={key} marginLeft={2} flexDirection="column">
-                <Text color="magenta" dimColor>
-                  {thinkingText} {!isExpanded && <Text>(Ctrl+O to expand)</Text>}
-                </Text>
-                <Box marginLeft={2}>
-                  {isExpanded ? (
-                    <Text dimColor>{block.text}</Text>
-                  ) : (
-                    <Text dimColor wrap="truncate-end">{block.text.replace(/\\s+/g, ' ').trim()}</Text>
-                  )}
-                </Box>
-              </Box>
-            );
-          }
-          if (block.type === 'assistant') {
-            return <Box key={key} marginLeft={2}><Text>{(marked.parse(block.text) as string).trim() || block.text}</Text></Box>;
-          }
-          if (block.type === 'tool-call') {
-            return renderToolCall(block, key);
-          }
-          if (block.type === 'tool-group') {
-            if (!toolsExpanded) {
-              const callingCount = block.calls.filter((b: any) => b.call.status === 'calling').length;
-              const failedCount = block.calls.filter((b: any) => b.call.status === 'done' && b.call.result && typeof b.call.result === 'object' && b.call.result.success === false).length;
-
-              let statusText = `Used ${block.calls.length} tools`;
-              if (callingCount > 0) statusText = `Using ${callingCount} tools...`;
-              else if (failedCount > 0) statusText = `Used ${block.calls.length} tools (${failedCount} failed)`;
-
-              return (
-                <Box key={key} marginLeft={2} flexDirection="row">
-                  {callingCount > 0 ? <Text color="yellow"><Spinner type="dots" /> </Text> : failedCount > 0 ? <Text color="red">✖ </Text> : <Text color="green">✔ </Text>}
-                  <Text color="cyan">{statusText}</Text>
-                  <Text dimColor> (Ctrl+O to expand)</Text>
-                </Box>
-              );
-            } else {
-              return (
-                <Box key={key} flexDirection="column">
-                  <Box marginLeft={2} marginBottom={0}>
-                    <Text dimColor>── Grouped Tools ({block.calls.length})</Text>
-                  </Box>
-                  {block.calls.map((b: any, j: number) => renderToolCall(b, `${key}-${j}`))}
-                </Box>
-              );
-            }
-          }
-          return null;
+        loadMcpTools().then(mcpTools => {
+            setCombinedTools(prev => ({ ...prev, loadSkill: loadSkillTool, ...mcpTools }));
         });
-      })()}
+    }, []);
 
-      {isStreaming && !pendingConfirm && (
-        <Box marginLeft={2}><Text color="yellow"><Spinner type="dots" /> Working...</Text></Box>
-      )}
+    useEffect(() => { setCommandIndex(0); }, [query]);
 
-      {pendingConfirm && (() => {
-        let confirmDiffLines: string[] | undefined;
-        if (pendingConfirm.name === 'editFile' && pendingConfirm.input && pendingConfirm.input.oldText !== undefined && pendingConfirm.input.newText !== undefined) {
-          const patch = diff.createPatch(String(pendingConfirm.input.path) || 'file', String(pendingConfirm.input.oldText), String(pendingConfirm.input.newText));
-          confirmDiffLines = patch.split('\n');
+    const loadSession = (id: string) => {
+        try {
+            const file = path.join(os.homedir(), '.parallax', `${id}.json`);
+            if (fs.existsSync(file)) {
+                const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+                setSessionId(id);
+
+                let loadedBlocks = data.blocks || [];
+
+                // Correct legacy ordering: older versions of Parallax mistakenly placed grouped
+                // 'tool' blocks before the 'assistant' blocks in the JSON.
+                for (let i = 0; i < loadedBlocks.length - 1; i++) {
+                    if (loadedBlocks[i].type === 'tool' && loadedBlocks[i + 1].type === 'assistant') {
+                        const temp = loadedBlocks[i];
+                        loadedBlocks[i] = loadedBlocks[i + 1];
+                        loadedBlocks[i + 1] = temp;
+                        i++; // Skip the next index since we just swapped it
+                    }
+                }
+
+                let flattenedBlocks: MessageBlock[] = [];
+                for (const b of loadedBlocks) {
+                    if (b.type === 'tool') {
+                        for (const tc of b.calls) {
+                            flattenedBlocks.push({ type: 'tool-call', id: tc.id || crypto.randomUUID(), call: tc });
+                        }
+                    } else {
+                        flattenedBlocks.push({ ...b, id: b.id || crypto.randomUUID() });
+                    }
+                }
+
+                setBlocks(flattenedBlocks);
+                setCommittedBlocks([]);
+                setMessages(data.messages || []);
+            }
+            setIsSelectingSession(false);
+        } catch (err: any) {
+            setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: crypto.randomUUID(), text: `Failed to load: ${err.message}` }]);
+            setIsSelectingSession(false);
+        }
+    };
+
+    useEffect(() => {
+        if (sessionId) {
+            fs.mkdirSync(path.dirname(HISTORY_FILE), { recursive: true });
+            if (messages.length > 0) {
+                const timeout = setTimeout(() => {
+                    fs.writeFileSync(HISTORY_FILE, JSON.stringify({ blocks: [...committedBlocks, ...blocks], messages }, null, 2));
+                }, 1000);
+                return () => clearTimeout(timeout);
+            }
+        }
+    }, [blocks, committedBlocks, messages, sessionId]);
+
+    useInput((input: string, key: any) => {
+        if (key.shift && key.tab) {
+            setYoloMode(v => !v);
+            return;
+        }
+
+        if (pendingConfirm) {
+            if (input.toLowerCase() === 'y' || key.return) {
+                pendingConfirm.resolve(true);
+                setPendingConfirm(null);
+            } else if (input.toLowerCase() === 'n' || key.escape || (key.ctrl && input === 'c')) {
+                pendingConfirm.resolve(false);
+                setPendingConfirm(null);
+                if (key.ctrl && input === 'c') {
+                    if (isStreaming && abortController) {
+                        abortController.abort();
+                        setIsStreaming(false);
+                    } else {
+                        setExitPrompted(true);
+                    }
+                } else if (key.escape) {
+                    if (isStreaming && abortController) {
+                        abortController.abort();
+                        setIsStreaming(false);
+                    }
+                }
+            }
+            return;
+        }
+
+        if (exitPrompted) {
+            if (key.ctrl && input === 'c') {
+                let lastMsg = 'No previous messages.';
+                for (let i = blocks.length - 1; i >= 0; i--) {
+                    const b: any = blocks[i];
+                    if ((b.type === 'user' || b.type === 'assistant') && b.text) {
+                        const words = b.text.trim().split(/\s+/);
+                        lastMsg = words.slice(0, 5).join(' ') + (words.length > 5 ? '...' : '');
+                        break;
+                    }
+                }
+
+                let killedCount = 0;
+                for (const [id, cmd] of activeCommands.entries()) {
+                    try {
+                        cmd.process.kill();
+                        killedCount++;
+                    } catch (e) { }
+                }
+
+                if (onExitCb) {
+                    onExitCb({ sessionId, lastMsg, killedCount });
+                }
+
+                setIsExiting(true);
+                setTimeout(() => {
+                    exit();
+                    setTimeout(() => process.exit(0), 100);
+                }, 5);
+            } else {
+                setExitPrompted(false);
+            }
+            return;
+        }
+
+        if (!isStreaming && !isSelectingModel && !isFetchingModels && !isSelectingSession && !isSelectingSkillTarget && !isEnteringSkillName) {
+            if (query.startsWith('/')) {
+                const filtered = AVAILABLE_COMMANDS.filter(c => c.cmd.startsWith(query.toLowerCase().split(' ')[0]));
+                if (key.upArrow) {
+                    setCommandIndex((i: number) => Math.max(0, i - 1));
+                    return;
+                }
+                if (key.downArrow) {
+                    setCommandIndex((i: number) => Math.min(filtered.length - 1, i + 1));
+                    return;
+                }
+                if (key.tab && filtered.length > 0) {
+                    setQuery(filtered[commandIndex].cmd + ' ');
+                    return;
+                }
+            }
+
+            if (key.tab) {
+                setMode(prev => prev === 'agent' ? 'plan' : prev === 'plan' ? 'debug' : 'agent');
+                return;
+            }
+        }
+
+        if (key.ctrl && (input === 'o' || input === '\x0f')) {
+            setToolsExpanded(v => !v);
+            return;
+        } else if (key.ctrl && input === 'c') {
+            if (isStreaming && abortController) {
+                abortController.abort();
+                setIsStreaming(false);
+                const interruptId = crypto.randomUUID();
+                const interruptMsg = '[System: The user interrupted / abruptly stopped the agent iteration stream.]';
+                setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: interruptId, text: interruptMsg }]);
+                setMessages((prev: any[]) => [...prev, { role: 'user', parts: [{ text: interruptMsg }] }]);
+            } else {
+                setExitPrompted(true);
+            }
+        } else if (key.escape) {
+            if (isStreaming && abortController) {
+                abortController.abort();
+                setIsStreaming(false);
+                const interruptId = crypto.randomUUID();
+                const interruptMsg = '[System: The user interrupted / abruptly stopped the agent iteration stream.]';
+                setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: interruptId, text: interruptMsg }]);
+                setMessages((prev: any[]) => [...prev, { role: 'user', parts: [{ text: interruptMsg }] }]);
+            } else {
+                setExitPrompted(true);
+            }
+        }
+    });
+
+    const handleSubmit = useCallback(
+        async (txt: string) => {
+            if (!txt.trim() || isStreaming) return;
+
+            let cmd = txt.trim().toLowerCase();
+            let parts = txt.trim().split(/\s+/);
+            let args = parts.slice(1);
+            let sendUserText = txt;
+            let displayUserText = txt;
+
+            setQuery('');
+
+            if (cmd.startsWith('/')) {
+                let command = parts[0].toLowerCase();
+
+                const filtered = AVAILABLE_COMMANDS.filter(c => c.cmd.startsWith(command));
+                if (filtered.length > 0 && commandIndex < filtered.length && command !== filtered[commandIndex].cmd) {
+                    command = filtered[commandIndex].cmd;
+                }
+
+                if (command === '/') {
+                    return; // Ignore isolated slashes
+                }
+                if (command === '/model') {
+                    if (args[0]) {
+                        setCurrentModel(args[0]);
+                        setBlocks((prev: MessageBlock[]) => [...prev, { type: 'assistant', id: crypto.randomUUID(), text: `Model changed to ${args[0]}` }]);
+                    } else {
+                        setIsFetchingModels(true);
+                        fetchAvailableModels().then(models => {
+                            setAvailableModels(models);
+                            setIsFetchingModels(false);
+                            setIsSelectingModel(true);
+                        }).catch(() => {
+                            setIsFetchingModels(false);
+                        });
+                    }
+                    return;
+                } else if (command === '/new') {
+                    const freshId = crypto.randomBytes(4).toString('hex');
+                    setSessionId(freshId);
+                    setCommittedBlocks([]);
+                    setBlocks([{ type: 'assistant', id: crypto.randomUUID(), text: `Created new session: ${freshId}` }]);
+                    setMessages([]);
+                    return;
+                } else if (command === '/init') {
+                    displayUserText = '/init';
+                    sendUserText = "CRITICAL INSTRUCTION: Analyze the entire codebase in the current directory. Generate a 70-120 line comprehensive description of the codebase including architectural details, and write it to 'PARALLAX.md'. This file will be used as the agent's system prompt on subsequent initializations.";
+                } else if (command === '/commit' || command === '/commit:pr' || command === '/commit:no-push') {
+                    displayUserText = command;
+                    if (command === '/commit:pr') {
+                        sendUserText = "CRITICAL INSTRUCTION: Analyze the changes made in this session. Generate a commit message and commit them locally. To open a PR, check if the user has push access to origin. If they do not, use the GitHub CLI to autonomously fork the repository and push to the fork instead. Finally, use `gh pr create --fill` to submit the Pull Request. Ensure all `gh` commands are run non-interactively to prevent terminal hanging.";
+                    } else if (command === '/commit:no-push') {
+                        sendUserText = "CRITICAL INSTRUCTION: Analyze the changes made in this session. Generate a commit message for the current changes and commit them locally. Do NOT push to origin.";
+                    } else {
+                        sendUserText = "CRITICAL INSTRUCTION: Analyze the changes made in this session. Generate a commit message for the current changes. Afterwards commit with that message and push to origin.";
+                    }
+                } else if (command === '/parallax') {
+                    setCurrentModel('gemini:gemini-3.1-pro-preview');
+                    const objective = args.join(' ');
+                    displayUserText = `/parallax ${objective}`;
+                    sendUserText = `CRITICAL INSTRUCTION: You are the Master Coordinator Agent. Your objective is: "${objective}".\nYou MUST NOT perform simple implementations directly. Instead, break this objective down into smaller tasks and use your \`subagent\` tool to spawn smaller execution agents to perform each sub-task. You MUST spawn all independent subagents concurrently in a SINGLE turn using parallel tool calls. Do not wait for one to finish before starting another unless they have strict dependencies. Coordinate their results and compile the complete solution.`;
+                } else if (command === '/compact') {
+                    const prompt = "CRITICAL INSTRUCTION: Provide an in-depth, highly comprehensive summary of our ENTIRE conversation history up to this point. Include all relevant technical context, code paths, goals, and decisions. This summary will be used to replace our entire context window to save tokens, so ensure no critical information is lost.";
+                    setBlocks((prev: MessageBlock[]) => [...prev, { type: 'user', id: crypto.randomUUID(), text: '/compact' }, { type: 'assistant', id: crypto.randomUUID(), text: '' }]);
+
+                    const provider = ProviderFactory.create(currentModel);
+                    const newMessages = [...messages, provider.createUserMessage(prompt)];
+                    setMessages(newMessages); // Set temporarily so stream can evaluate it
+                    setIsStreaming(true);
+
+                    setTimeout(async () => {
+                        let fullText = '';
+                        try {
+                            const compactAgent = new ToolLoopAgent({ provider, tools: combinedTools, systemInstruction: "You are a coding assistant." });
+                            const stream = compactAgent.stream(newMessages);
+                            for await (const part of stream) {
+                                if (part.type === 'text-delta') {
+                                    fullText += part.text;
+                                    setBlocks((prev: MessageBlock[]) => {
+                                        const next = [...prev];
+                                        const last = next[next.length - 1];
+                                        if (last.type === 'assistant') last.text = fullText;
+                                        return next;
+                                    });
+                                }
+                            }
+
+                            // Done! Nuke the context
+                            setBlocks([{ type: 'assistant', id: crypto.randomUUID(), text: `*[History Compacted]*\n\n${fullText}` }]);
+                            setCommittedBlocks([]);
+                            setMessages([
+                                provider.createUserMessage("Here is the comprehensive summary of our previous conversation up to this point:\n\n" + fullText),
+                                { role: 'model', parts: [{ text: "Understood. I have fully internalized this historical context and am ready to proceed with your next instructions." }] } as any
+                            ]);
+                        } catch (err: any) {
+                            setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: crypto.randomUUID(), text: `Compact failed: ${err.message}` }]);
+                        } finally {
+                            setIsStreaming(false);
+                        }
+                    }, 0);
+                    return;
+                } else if (command === '/load') {
+                    if (!args[0]) {
+                        try {
+                            const dir = path.join(os.homedir(), '.parallax');
+                            if (fs.existsSync(dir)) {
+                                let items = fs.readdirSync(dir).filter(f => f.endsWith('.json')).map(f => {
+                                    const id = f.replace('.json', '');
+                                    let detail = '';
+                                    try {
+                                        const filePath = path.join(dir, f);
+                                        const stat = fs.statSync(filePath);
+                                        const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                                        if (!data.messages || data.messages.length === 0) {
+                                            try { fs.unlinkSync(filePath); } catch { } // Cleanup empty sessions
+                                            return null;
+                                        }
+                                        const blks = data.blocks || [];
+                                        for (let i = blks.length - 1; i >= 0; i--) {
+                                            if (blks[i].type === 'user' || blks[i].type === 'assistant') {
+                                                let text = blks[i].text.split('\n')[0];
+                                                if (text.length > 55) text = text.slice(0, 55) + '...';
+                                                detail = text.trim();
+                                                break;
+                                            }
+                                        }
+                                        const dateStr = new Date(stat.mtimeMs).toLocaleString();
+                                        return { id, label: `${id}  [${dateStr}]`, detail, mtimeMs: stat.mtimeMs };
+                                    } catch {
+                                        return null;
+                                    }
+                                }).filter(Boolean) as { id: string; label: string; detail: string; mtimeMs?: number }[];
+
+                                items.sort((a, b) => (b.mtimeMs || 0) - (a.mtimeMs || 0));
+
+                                if (items.length === 0) items = [{ id: sessionId, label: `${sessionId}  [New]`, detail: '' }];
+                                setAvailableSessions(items);
+                                setIsSelectingSession(true);
+                            }
+                        } catch { }
+                        return;
+                    }
+                    loadSession(args[0]);
+                    return;
+                } else if (command === '/skills') {
+                    setIsSelectingSkillTarget(true);
+                    return;
+                } else if (command === '/skills-install') {
+                    const target = args[0] || 'local';
+                    const skillStr = args.slice(1).join('').replace(/\s+/g, '').trim();
+                    const targetDir = target === 'global' ? path.join(os.homedir(), '.agents') : path.join(process.cwd(), '.agents');
+
+                    displayUserText = `/skills add ${skillStr} (${target})`;
+                    sendUserText = `CRITICAL INSTRUCTION: You must run the following bash command using your tool to install a skill for the user:\n\`\`\`bash\nnpx skills add -y "${skillStr}"\n\`\`\`\nDo not ask for confirmation, just run it.`;
+                } else if (command === '/help') {
+                    const helpText = AVAILABLE_COMMANDS.map(c => `**${c.cmd}** - ${c.desc}`).join('\n');
+                    setBlocks((prev: MessageBlock[]) => [...prev, { type: 'assistant', id: crypto.randomUUID(), text: helpText }]);
+                    return;
+                } else {
+                    setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: crypto.randomUUID(), text: `Unknown command: ${command}` }]);
+                    return;
+                }
+            }
+
+            setCommittedBlocks(prev => [...prev, ...blocks]);
+            setBlocks([{ type: 'user', id: crypto.randomUUID(), text: displayUserText }]);
+
+            const provider = ProviderFactory.create(currentModel);
+
+            let sysInstruct = getSystemPrompt();
+
+            const parallaxMdPath = path.join(process.cwd(), 'PARALLAX.md');
+            if (fs.existsSync(parallaxMdPath)) {
+                sysInstruct += `\n\n# Project Architecture (PARALLAX.md)\n${fs.readFileSync(parallaxMdPath, 'utf8')}`;
+            }
+
+            if (skills.length > 0) {
+                sysInstruct += `\n\n# Available Skills\nYou have access to the following specialized skills. To use them, call the \`loadSkill\` tool with the name of the skill to retrieve its full instructions.\n`;
+                for (const skill of skills) {
+                    sysInstruct += `\n${skill.frontmatter}\n`;
+                }
+            }
+
+            if (mode === 'plan') {
+                sysInstruct = `
+<planning_mode>
+You are in Planning Mode. Exercise judgement on whether a user's request warrants a plan before taking action.
+
+**When to Plan**. Stop and create a plan if the user's request requires:
+- Major architectural changes
+- Extensive research to fulfill
+- Significant decision making and ambiguity
+- Any complex changes that are not just simple tweaks
+
+If you decide that a request warrants a plan, then follow this workflow:
+
+## Phase 1: Research
+- Thoroughly research the task using research tools.
+- DO NOT make any source code changes or run modifying commands during this phase.
+
+## Phase 2: Create Implementation Plan
+- Create an implementation plan based on your findings.
+
+## Phase 3: Execute
+- Once approved, execute the plan cleanly and incrementally.
+
+**When NOT to plan**. Do not create a plan or block if the user's request:
+- Is investigatory in nature, for example: 'explain how X works', 'where do we do Y?'
+- Is trivially simple and one-off in nature. For example: 'fix the alignment', 'add a comment', 'run this command'
+</planning_mode>
+\n${sysInstruct}`;
+            } else if (mode === 'debug') {
+                sysInstruct = `You are a debugging assistant. Focus on finding bugs, reasoning about the state, and adding logs.\n${sysInstruct}`;
+            }
+
+            const agent = new ToolLoopAgent({
+                provider,
+                tools: combinedTools,
+                systemInstruction: sysInstruct,
+                onConfirm: async (tc) => {
+                    if (yoloModeRef.current) return true;
+                    return new Promise<boolean>((resolve) => {
+                        setPendingConfirm({ ...tc, resolve });
+                    });
+                }
+            });
+
+            const newMessages = [...messages, provider.createUserMessage(sendUserText)];
+            setMessages(newMessages);
+            setIsStreaming(true);
+            const ac = new AbortController();
+            setAbortController(ac);
+
+            let fullText = '';
+            let thinkingText = '';
+            let thinkingBlockIndex = -1;
+            let assistantBlockIndex = -1;
+
+            try {
+                const stream = agent.stream(newMessages);
+                for await (const part of stream) {
+                    if (ac.signal.aborted) break;
+
+                    if (part.type === 'thinking-delta') {
+                        thinkingText += part.text;
+                        const currentThinking = thinkingText;
+                        setBlocks((prev) => {
+                            let updated = [...prev];
+                            if (thinkingBlockIndex === -1) {
+                                thinkingBlockIndex = updated.length;
+                                updated.push({ type: 'thinking', id: crypto.randomUUID(), text: currentThinking, startTime: Date.now() });
+                            } else {
+                                updated[thinkingBlockIndex] = { ...(updated[thinkingBlockIndex] as any), text: currentThinking } as any;
+                            }
+                            return updated;
+                        });
+                    } else if (part.type === 'text-delta') {
+                        fullText += part.text;
+                        const currentText = fullText;
+                        setBlocks((prev) => {
+                            let updated = [...prev];
+                            if (thinkingBlockIndex !== -1 && !(updated[thinkingBlockIndex] as any).endTime) {
+                                updated[thinkingBlockIndex] = { ...(updated[thinkingBlockIndex] as any), endTime: Date.now() } as any;
+                            }
+                            if (assistantBlockIndex === -1) {
+                                assistantBlockIndex = updated.length;
+                                updated.push({ type: 'assistant', id: crypto.randomUUID(), text: currentText });
+                            } else {
+                                updated[assistantBlockIndex] = { ...(updated[assistantBlockIndex] as any), text: currentText } as any;
+                            }
+                            return updated;
+                        });
+                    } else if (part.type === 'tool-call') {
+                        const tc: ToolCallInfo = {
+                            id: part.toolCallId || crypto.randomUUID(),
+                            name: part.toolName || '',
+                            args: part.input as Record<string, unknown>,
+                            status: 'calling',
+                        };
+                        setBlocks((prev) => {
+                            let updated = [...prev];
+                            if (thinkingBlockIndex !== -1 && !(updated[thinkingBlockIndex] as any).endTime) {
+                                updated[thinkingBlockIndex] = { ...(updated[thinkingBlockIndex] as any), endTime: Date.now() } as any;
+                            }
+                            updated.push({ type: 'tool-call', id: tc.id, call: tc });
+                            return updated;
+                        });
+                    } else if (part.type === 'tool-result') {
+                        setBlocks((prev: MessageBlock[]) => {
+                            const updated = [...prev];
+                            for (let i = updated.length - 1; i >= 0; i--) {
+                                const b = updated[i];
+                                if (b.type === 'tool-call' && b.call.id === part.toolCallId) {
+                                    updated[i] = { type: 'tool-call', id: b.id, call: { ...b.call, status: 'done', result: part.output } };
+                                    break;
+                                }
+                            }
+                            return updated;
+                        });
+                    } else if (part.type === 'finish-step') {
+                        setBlocks((prev) => {
+                            let updated = [...prev];
+                            if (thinkingBlockIndex !== -1 && !(updated[thinkingBlockIndex] as any).endTime) {
+                                updated[thinkingBlockIndex] = { ...(updated[thinkingBlockIndex] as any), endTime: Date.now() } as any;
+                            }
+                            return updated;
+                        });
+                        fullText = '';
+                        thinkingText = '';
+                        thinkingBlockIndex = -1;
+                        assistantBlockIndex = -1;
+                    }
+                }
+                if (!ac.signal.aborted) setMessages([...newMessages]);
+            } catch (err: any) {
+                setBlocks((prev: MessageBlock[]) => [...prev, { type: 'error', id: crypto.randomUUID(), text: err?.message || String(err) }]);
+            } finally {
+                setIsStreaming(false);
+                setAbortController(null);
+            }
+        },
+        [messages, isStreaming, currentModel, commandIndex, combinedTools, mode]
+    );
+
+    useEffect(() => {
+        if (initialSessionId && !hasInitialized.current) {
+            hasInitialized.current = true;
+            loadSession(initialSessionId);
+            if (initialPrompt) {
+                // slight delay to ensure messages loaded before submitting
+                setTimeout(() => handleSubmit(initialPrompt), 50);
+            }
+        } else if (initialPrompt && !hasInitialized.current) {
+            hasInitialized.current = true;
+            handleSubmit(initialPrompt);
+        }
+    }, [initialPrompt, initialSessionId, handleSubmit]);
+
+    const renderToolCall = (tc: ToolCallInfo, key: string | number) => {
+        let diffLines: string[] | undefined;
+        if (tc.status === 'done') {
+            if (tc.result && typeof tc.result === 'object' && (tc.result as any).diff) {
+                diffLines = String((tc.result as any).diff).split('\n');
+            } else if (tc.name === 'ReplaceFileContent' && tc.args.TargetContent !== undefined && tc.args.ReplacementContent !== undefined) {
+                const patch = diff.createPatch(String(tc.args.TargetFile) || 'file', String(tc.args.TargetContent), String(tc.args.ReplacementContent));
+                diffLines = patch.split('\n');
+            }
         }
 
         return (
-          <Box marginTop={1} marginLeft={2} flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
-            <Text color="yellow" bold>⚠ Agent wants to execute: {getToolLabel(pendingConfirm.name, pendingConfirm.input, 'calling')}</Text>
+            <Box key={key} marginLeft={2} flexDirection="column">
+                <Box flexDirection="row">
+                    {tc.status === 'calling' ? (
+                        <Shimmer text={getToolLabel(tc.name, tc.args, tc.status as any, tc.result)} width={15} />
+                    ) : (
+                        <>
+                            {tc.result && typeof tc.result === 'object' && (tc.result as any).success === false
+                                ? <Text color="red">✖ </Text>
+                                : <Text color="green">✔ </Text>}
+                            <Text color="cyan">{getToolLabel(tc.name, tc.args, tc.status as any, tc.result)}</Text>
+                        </>
+                    )}
+                </Box>
+                {toolsExpanded && (
+                    <Box marginLeft={4} flexDirection="column" marginTop={0}>
+                        <Text dimColor wrap="truncate-end">Args: {JSON.stringify(tc.args).slice(0, 300)}</Text>
+                        {tc.status === 'done' && tc.result !== undefined && typeof tc.result === 'object' && (tc.result as any).success !== false && tc.name !== 'ReplaceFileContent' && tc.name !== 'MultiReplaceFileContent' && (
+                            <Text dimColor wrap="truncate-end">Output: {JSON.stringify(tc.result).slice(0, 300)}</Text>
+                        )}
+                    </Box>
+                )}
+                {tc.status === 'done' && tc.result && typeof tc.result === 'object' && (tc.result as any).success === false ? (
+                    <Box marginLeft={4} flexDirection="column" marginTop={0}>
+                        <Text color="red">Error: {String((tc.result as any).error || 'Unknown failure')}</Text>
+                    </Box>
+                ) : null}
+                {diffLines && typeof tc.result === 'object' && (tc.result as any).success !== false ? (
+                    <Box marginLeft={4} flexDirection="column" marginTop={1}>
+                        <DiffViewer diffLines={diffLines} />
+                    </Box>
+                ) : null}
+            </Box>
+        );
+    };
 
-            {confirmDiffLines ? (
-              <Box flexDirection="column" borderStyle="single" borderColor="gray" marginTop={1} marginBottom={1}>
-                <DiffViewer diffLines={confirmDiffLines} />
-              </Box>
-            ) : pendingConfirm.name === 'runCommand' && pendingConfirm.input && pendingConfirm.input.command ? (
-              <Box marginLeft={2} marginTop={1} marginBottom={0}>
-                <Text>{String(marked.parse(`\`\`\`bash\n${pendingConfirm.input.command}\n\`\`\``)).trim()}</Text>
-              </Box>
-            ) : pendingConfirm.name === 'writeFile' && pendingConfirm.input && pendingConfirm.input.content ? (
-              <Box marginLeft={2} marginTop={1} marginBottom={0}>
-                <Text>{String(marked.parse(`\`\`\`${pendingConfirm.input.path ? path.extname(pendingConfirm.input.path).slice(1) : ''}\n${pendingConfirm.input.content}\n\`\`\``)).trim()}</Text>
-              </Box>
+    const renderBlock = (block: any, i: number) => {
+        const key = block.id || i;
+        if (block.type === 'user') return <Box key={key}><Text color="green" bold>❯ </Text><Text>{block.text}</Text></Box>;
+        if (block.type === 'error') return <Box key={key}><Text color="red">✖ Error: {block.text}</Text></Box>;
+        if (block.type === 'thinking') {
+            const isExpanded = toolsExpanded;
+            const thinkingText = (block as any).endTime ? (
+                <Text>💭 Thought for <Timer startTime={(block as any).startTime} endTime={(block as any).endTime} /></Text>
             ) : (
-              <Text dimColor>{JSON.stringify(pendingConfirm.input)}</Text>
+                <Text>💭 Thinking (<Timer startTime={(block as any).startTime} />)</Text>
+            );
+
+            return (
+                <Box key={key} marginLeft={2} flexDirection="column">
+                    <Text color="magenta" dimColor>
+                        {thinkingText} {!isExpanded && <Text>(Ctrl+O to expand)</Text>}
+                    </Text>
+                    <Box marginLeft={2}>
+                        {isExpanded ? (
+                            <Text dimColor>{block.text}</Text>
+                        ) : (
+                            <Text dimColor wrap="truncate-end">{block.text.replace(/\s+/g, ' ').trim()}</Text>
+                        )}
+                    </Box>
+                </Box>
+            );
+        }
+        if (block.type === 'assistant') {
+            return <Box key={key} marginLeft={2}><Text>{(marked.parse(block.text) as string).trim() || block.text}</Text></Box>;
+        }
+        if (block.type === 'tool-call') {
+            return renderToolCall(block.call, key);
+        }
+        if (block.type === 'tool-group') {
+            if (!toolsExpanded) {
+                const callingCount = block.calls.filter((b: any) => b.call.status === 'calling').length;
+                const failedCount = block.calls.filter((b: any) => b.call.status === 'done' && b.call.result && typeof b.call.result === 'object' && b.call.result.success === false).length;
+
+                let statusText = `Used ${block.calls.length} tools`;
+                if (callingCount > 0) statusText = `Using ${callingCount} tools...`;
+                else if (failedCount > 0) statusText = `Used ${block.calls.length} tools (${failedCount} failed)`;
+
+                return (
+                    <Box key={key} marginLeft={2} flexDirection="row">
+                        {callingCount > 0 ? (
+                            <Shimmer text={statusText} width={15} />
+                        ) : (
+                            <>
+                                {failedCount > 0 ? <Text color="red">✖ </Text> : <Text color="green">✔ </Text>}
+                                <Text color="cyan">{statusText}</Text>
+                            </>
+                        )}
+                        <Text dimColor> (Ctrl+O to expand)</Text>
+                    </Box>
+                );
+            } else {
+                return (
+                    <Box key={key} flexDirection="column">
+                        <Box marginLeft={2} marginBottom={0}>
+                            <Text dimColor>── Grouped Tools ({block.calls.length})</Text>
+                        </Box>
+                        {block.calls.map((b: any, j: number) => renderToolCall(b.call, `${key}-${j}`))}
+                    </Box>
+                );
+            }
+        }
+        return null;
+    };
+
+    const getGroupedBlocks = (blks: MessageBlock[]) => {
+        const grouped: any[] = [];
+        let currentGroup: any[] = [];
+        for (let i = 0; i < blks.length; i++) {
+            const b = blks[i];
+            if (b.type === 'tool-call') {
+                currentGroup.push(b);
+            } else {
+                if (currentGroup.length > 1) {
+                    grouped.push({ type: 'tool-group', id: (currentGroup[0].id || i) + '-group', calls: currentGroup });
+                } else if (currentGroup.length === 1) {
+                    grouped.push(currentGroup[0]);
+                }
+                currentGroup = [];
+                grouped.push(b);
+            }
+        }
+        if (currentGroup.length > 1) {
+            grouped.push({ type: 'tool-group', id: (currentGroup[0].id || blks.length) + '-group', calls: currentGroup });
+        } else if (currentGroup.length === 1) {
+            grouped.push(currentGroup[0]);
+        }
+        return grouped;
+    };
+
+    return (
+        <Box flexDirection="column" padding={1} marginLeft={1}>
+            <Box flexDirection="column" marginBottom={1}>
+                <Text bold>
+                    <Text color="cyan" bold>⚡ Parallax</Text>
+                </Text>
+                <Text dimColor>Type a message to start.</Text>
+            </Box>
+
+            {(() => {
+                const groupedBlocks: any[] = [];
+                let currentGroup: any[] = [];
+                for (let i = 0; i < blocks.length; i++) {
+                    const b = blocks[i];
+                    if (b.type === 'tool-call') {
+                        currentGroup.push(b);
+                    } else {
+                        if (currentGroup.length > 1) {
+                            groupedBlocks.push({ type: 'tool-group', id: currentGroup[0].id + '-group', calls: currentGroup });
+                        } else if (currentGroup.length === 1) {
+                            groupedBlocks.push(currentGroup[0]);
+                        }
+                        currentGroup = [];
+                        groupedBlocks.push(b);
+                    }
+                }
+                if (currentGroup.length > 1) {
+                    groupedBlocks.push({ type: 'tool-group', id: currentGroup[0].id + '-group', calls: currentGroup });
+                } else if (currentGroup.length === 1) {
+                    groupedBlocks.push(currentGroup[0]);
+                }
+
+                const renderToolCall = (block: any, key: string | number) => {
+                    const tc = block.call;
+
+                    let diffLines: string[] | undefined;
+                    if (tc.status === 'done') {
+                        if (tc.result && typeof tc.result === 'object' && (tc.result as any).diff) {
+                            diffLines = String((tc.result as any).diff).split('\n');
+                        } else if (tc.name === 'ReplaceFileContent' && tc.args.TargetContent !== undefined && tc.args.ReplacementContent !== undefined) {
+                            const patch = diff.createPatch(String(tc.args.TargetFile) || 'file', String(tc.args.TargetContent), String(tc.args.ReplacementContent));
+                            diffLines = patch.split('\n');
+                        }
+                    }
+
+                    return (
+                        <Box key={key} marginLeft={2} flexDirection="column">
+                            <Box flexDirection="row">
+                                {tc.status === 'calling' ? (
+                                    <Shimmer text={getToolLabel(tc.name, tc.args, tc.status as any, tc.result)} width={15} />
+                                ) : (
+                                    <>
+                                        {tc.result && typeof tc.result === 'object' && (tc.result as any).success === false
+                                            ? <Text color="red">✖ </Text>
+                                            : <Text color="green">✔ </Text>}
+                                        <Text color="cyan">{getToolLabel(tc.name, tc.args, tc.status as any, tc.result)}</Text>
+                                    </>
+                                )}
+                            </Box>
+                            {toolsExpanded && (
+                                <Box marginLeft={4} flexDirection="column" marginTop={0}>
+                                    <Text dimColor wrap="truncate-end">Args: {JSON.stringify(tc.args).slice(0, 300)}</Text>
+                                    {tc.status === 'done' && tc.result !== undefined && typeof tc.result === 'object' && (tc.result as any).success !== false && tc.name !== 'ReplaceFileContent' && tc.name !== 'MultiReplaceFileContent' && (
+                                        <Text dimColor wrap="truncate-end">Output: {JSON.stringify(tc.result).slice(0, 300)}</Text>
+                                    )}
+                                </Box>
+                            )}
+                            {tc.status === 'done' && tc.result && typeof tc.result === 'object' && (tc.result as any).success === false ? (
+                                <Box marginLeft={4} flexDirection="column" marginTop={0}>
+                                    <Text color="red">Error: {String((tc.result as any).error || 'Unknown failure')}</Text>
+                                </Box>
+                            ) : null}
+                            {diffLines && typeof tc.result === 'object' && (tc.result as any).success !== false ? (
+                                <Box marginLeft={4} flexDirection="column" marginTop={1}>
+                                    <DiffViewer diffLines={diffLines} />
+                                </Box>
+                            ) : null}
+                        </Box>
+                    );
+                };
+
+                return groupedBlocks.map((block: any, i: number) => {
+                    const key = block.id || i;
+                    if (block.type === 'user') return <Box key={key}><Text color="green" bold>❯ </Text><Text>{block.text}</Text></Box>;
+                    if (block.type === 'error') return <Box key={key}><Text color="red">✖ Error: {block.text}</Text></Box>;
+                    if (block.type === 'thinking') {
+                        const isExpanded = toolsExpanded;
+                        const thinkingText = (block as any).endTime ? (
+                            <Text>💭 Thought for <Timer startTime={(block as any).startTime} endTime={(block as any).endTime} /></Text>
+                        ) : (
+                            <Text>💭 Thinking (<Timer startTime={(block as any).startTime} />)</Text>
+                        );
+
+                        return (
+                            <Box key={key} marginLeft={2} flexDirection="column">
+                                <Text color="magenta" dimColor>
+                                    {thinkingText} {!isExpanded && <Text>(Ctrl+O to expand)</Text>}
+                                </Text>
+                                <Box marginLeft={2}>
+                                    {isExpanded ? (
+                                        <Text dimColor>{block.text}</Text>
+                                    ) : (
+                                        <Text dimColor wrap="truncate-end">{block.text.replace(/\\s+/g, ' ').trim()}</Text>
+                                    )}
+                                </Box>
+                            </Box>
+                        );
+                    }
+                    if (block.type === 'assistant') {
+                        return <Box key={key} marginLeft={2}><Text>{(marked.parse(block.text) as string).trim() || block.text}</Text></Box>;
+                    }
+                    if (block.type === 'tool-call') {
+                        return renderToolCall(block, key);
+                    }
+                    if (block.type === 'tool-group') {
+                        if (!toolsExpanded) {
+                            const callingCount = block.calls.filter((b: any) => b.call.status === 'calling').length;
+                            const failedCount = block.calls.filter((b: any) => b.call.status === 'done' && b.call.result && typeof b.call.result === 'object' && b.call.result.success === false).length;
+
+                            let statusText = `Used ${block.calls.length} tools`;
+                            if (callingCount > 0) statusText = `Using ${callingCount} tools...`;
+                            else if (failedCount > 0) statusText = `Used ${block.calls.length} tools (${failedCount} failed)`;
+
+                            return (
+                                <Box key={key} marginLeft={2} flexDirection="row">
+                                    {callingCount > 0 ? (
+                                        <Shimmer text={statusText} width={15} />
+                                    ) : (
+                                        <>
+                                            {failedCount > 0 ? <Text color="red">✖ </Text> : <Text color="green">✔ </Text>}
+                                            <Text color="cyan">{statusText}</Text>
+                                        </>
+                                    )}
+                                    <Text dimColor> (Ctrl+O to expand)</Text>
+                                </Box>
+                            );
+                        } else {
+                            return (
+                                <Box key={key} flexDirection="column">
+                                    <Box marginLeft={2} marginBottom={0}>
+                                        <Text dimColor>── Grouped Tools ({block.calls.length})</Text>
+                                    </Box>
+                                    {block.calls.map((b: any, j: number) => renderToolCall(b, `${key}-${j}`))}
+                                </Box>
+                            );
+                        }
+                    }
+                    return null;
+                });
+            })()}
+
+            {isStreaming && !pendingConfirm && (
+                <Box marginLeft={2}><Shimmer text="Working..." width={20} /></Box>
             )}
 
-            <Box marginTop={0}>
-              <Text>Allow execution? <Text color="green" bold>[Y/Enter] Yes</Text> <Text color="red" bold>[N/Esc] No</Text></Text>
-            </Box>
-          </Box>
-        );
-      })()}
-
-      {!isStreaming && query.startsWith('/') && !isSelectingModel && !isSelectingSession && (
-        <Box flexDirection="column" marginTop={1} paddingX={1} borderStyle="round" borderColor="blue">
-          {AVAILABLE_COMMANDS.filter(c => c.cmd.startsWith(query.toLowerCase().split(' ')[0])).map((c, idx) => {
-            const isSelected = idx === commandIndex;
-            return (
-              <Box key={c.cmd} flexDirection="row">
-                <Box width={14}>
-                  <Text color={isSelected ? "cyan" : "yellow"} bold={isSelected}>
-                    {isSelected ? '❯ ' : '  '}{c.cmd}
-                  </Text>
-                </Box>
-                <Text dimColor>{c.desc}</Text>
-              </Box>
-            );
-          })}
-        </Box>
-      )}
-
-      {isFetchingModels && (
-        <Box marginLeft={2} marginTop={1}>
-          <Text color="yellow"><Spinner type="dots" /> Discovering available models across multiple providers...</Text>
-        </Box>
-      )}
-
-      {isSelectingModel && (
-        <ListPicker
-          items={availableModels}
-          label="Select an AI Model:"
-          onSelect={(m) => { setCurrentModel(m); setIsSelectingModel(false); }}
-          onCancel={() => setIsSelectingModel(false)}
-        />
-      )}
-
-      {isSelectingSession && (
-        <ListPicker
-          items={availableSessions}
-          label="Select a historical session:"
-          onSelect={(id) => loadSession(id)}
-          onCancel={() => setIsSelectingSession(false)}
-        />
-      )}
-
-      {isSelectingSkillTarget && (
-        <ListPicker
-          label="Where should the skill be installed?"
-          items={[{ id: 'local', label: 'Local Workspace', detail: 'Installs to .agents/ in the current directory' }, { id: 'global', label: 'Global Profile', detail: 'Installs to ~/.agents/ for all projects' }]}
-          onSelect={(id) => {
-            setIsSelectingSkillTarget(false);
-            setIsEnteringSkillName({ target: id as 'local' | 'global' });
-          }}
-          onCancel={() => setIsSelectingSkillTarget(false)}
-        />
-      )}
-
-      {isEnteringSkillName && (
-        <Box flexDirection="column" marginTop={1} marginLeft={2}>
-          <Text color="magenta" bold>Enter skill name to install (e.g., vercel-labs/agent-skills):</Text>
-          <Box marginLeft={2} flexDirection="row">
-            <Text color="green">❯ </Text>
-            <SafeTextInput
-              value={skillNameInput}
-              onChange={setSkillNameInput}
-              onCancel={() => {
-                setIsEnteringSkillName(null);
-                setSkillNameInput('');
-              }}
-              onSubmit={(val) => {
-                const cleaned = val.trim();
-                if (!cleaned) {
-                  setIsEnteringSkillName(null);
-                  setSkillNameInput('');
-                  return;
+            {pendingConfirm && (() => {
+                let confirmDiffLines: string[] | undefined;
+                if (pendingConfirm.name === 'ReplaceFileContent' && pendingConfirm.input && pendingConfirm.input.TargetContent !== undefined && pendingConfirm.input.ReplacementContent !== undefined) {
+                    const patch = diff.createPatch(String(pendingConfirm.input.TargetFile) || 'file', String(pendingConfirm.input.TargetContent), String(pendingConfirm.input.ReplacementContent));
+                    confirmDiffLines = patch.split('\n');
                 }
-                const targetName = isEnteringSkillName.target;
-                setIsEnteringSkillName(null);
-                setSkillNameInput('');
 
-                handleSubmit(`/skills-install ${targetName} ${cleaned}`);
-              }}
-            />
-          </Box>
-          <Box marginTop={1}>
-            <Text dimColor>Press Enter to submit, or Esc to cancel.</Text>
-          </Box>
+                return (
+                    <Box marginTop={1} marginLeft={2} flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
+                        <Text color="yellow" bold>⚠ Agent wants to execute: {getToolLabel(pendingConfirm.name, pendingConfirm.input, 'calling')}</Text>
+
+                        {confirmDiffLines ? (
+                            <Box flexDirection="column" borderStyle="single" borderColor="gray" marginTop={1} marginBottom={1}>
+                                <DiffViewer diffLines={confirmDiffLines} />
+                            </Box>
+                        ) : pendingConfirm.name === 'RunCommand' && pendingConfirm.input && pendingConfirm.input.CommandLine ? (
+                            <Box marginLeft={2} marginTop={1} marginBottom={0}>
+                                <Text>{String(marked.parse(`\`\`\`bash\n${pendingConfirm.input.CommandLine}\n\`\`\``)).trim()}</Text>
+                            </Box>
+                        ) : pendingConfirm.name === 'WriteToFile' && pendingConfirm.input && pendingConfirm.input.CodeContent ? (
+                            <Box marginLeft={2} marginTop={1} marginBottom={0}>
+                                <Text>{String(marked.parse(`\`\`\`${pendingConfirm.input.TargetFile ? path.extname(pendingConfirm.input.TargetFile).slice(1) : ''}\n${pendingConfirm.input.CodeContent}\n\`\`\``)).trim()}</Text>
+                            </Box>
+                        ) : (
+                            <Text dimColor>{JSON.stringify(pendingConfirm.input)}</Text>
+                        )}
+
+                        <Box marginTop={0}>
+                            <Text>Allow execution? <Text color="green" bold>[Y/Enter] Yes</Text> <Text color="red" bold>[N/Esc] No</Text></Text>
+                        </Box>
+                    </Box>
+                );
+            })()}
+
+            {!isStreaming && query.startsWith('/') && !isSelectingModel && !isSelectingSession && (
+                <Box flexDirection="column" marginTop={1} paddingX={1} borderStyle="round" borderColor="blue">
+                    {AVAILABLE_COMMANDS.filter(c => c.cmd.startsWith(query.toLowerCase().split(' ')[0])).map((c, idx) => {
+                        const isSelected = idx === commandIndex;
+                        return (
+                            <Box key={c.cmd} flexDirection="row">
+                                <Box width={14}>
+                                    <Text color={isSelected ? "cyan" : "yellow"} bold={isSelected}>
+                                        {isSelected ? '❯ ' : '  '}{c.cmd}
+                                    </Text>
+                                </Box>
+                                <Text dimColor>{c.desc}</Text>
+                            </Box>
+                        );
+                    })}
+                </Box>
+            )}
+
+            {isFetchingModels && (
+                <Box marginLeft={2} marginTop={1}>
+                    <Shimmer text="Discovering available models across multiple providers..." width={20} />
+                </Box>
+            )}
+
+            {isSelectingModel && (
+                <ListPicker
+                    items={availableModels}
+                    label="Select an AI Model:"
+                    onSelect={(m) => { setCurrentModel(m); setIsSelectingModel(false); }}
+                    onCancel={() => setIsSelectingModel(false)}
+                />
+            )}
+
+            {isSelectingSession && (
+                <ListPicker
+                    items={availableSessions}
+                    label="Select a historical session:"
+                    onSelect={(id) => loadSession(id)}
+                    onCancel={() => setIsSelectingSession(false)}
+                />
+            )}
+
+            {isSelectingSkillTarget && (
+                <ListPicker
+                    label="Where should the skill be installed?"
+                    items={[{ id: 'local', label: 'Local Workspace', detail: 'Installs to .agents/ in the current directory' }, { id: 'global', label: 'Global Profile', detail: 'Installs to ~/.agents/ for all projects' }]}
+                    onSelect={(id) => {
+                        setIsSelectingSkillTarget(false);
+                        setIsEnteringSkillName({ target: id as 'local' | 'global' });
+                    }}
+                    onCancel={() => setIsSelectingSkillTarget(false)}
+                />
+            )}
+
+            {isEnteringSkillName && (
+                <Box flexDirection="column" marginTop={1} marginLeft={2}>
+                    <Text color="magenta" bold>Enter skill name to install (e.g., vercel-labs/agent-skills):</Text>
+                    <Box marginLeft={2} flexDirection="row">
+                        <Text color="green">❯ </Text>
+                        <SafeTextInput
+                            value={skillNameInput}
+                            onChange={setSkillNameInput}
+                            onCancel={() => {
+                                setIsEnteringSkillName(null);
+                                setSkillNameInput('');
+                            }}
+                            onSubmit={(val) => {
+                                const cleaned = val.trim();
+                                if (!cleaned) {
+                                    setIsEnteringSkillName(null);
+                                    setSkillNameInput('');
+                                    return;
+                                }
+                                const targetName = isEnteringSkillName.target;
+                                setIsEnteringSkillName(null);
+                                setSkillNameInput('');
+
+                                handleSubmit(`/skills-install ${targetName} ${cleaned}`);
+                            }}
+                        />
+                    </Box>
+                    <Box marginTop={1}>
+                        <Text dimColor>Press Enter to submit, or Esc to cancel.</Text>
+                    </Box>
+                </Box>
+            )}
+
+            {!isStreaming && !isSelectingModel && !isFetchingModels && !isSelectingSession && !isSelectingSkillTarget && !isEnteringSkillName && (
+                <Box marginTop={1}>
+                    <Text color="cyan" bold>❯ </Text>
+                    <SafeTextInput
+                        value={query}
+                        onChange={setQuery}
+                        onSubmit={handleSubmit}
+                    />
+                </Box>
+            )}
+
+            {!isExiting && (
+                <>
+                    <Box marginTop={1} flexDirection="row" justifyContent="space-between">
+                        {exitPrompted ? <Text color="red" bold>Press Ctrl+C again to exit.</Text> : <Text dimColor>Ctrl+C - Exit {isStreaming ? '| Esc - Stop' : '| Tab - Cycle Mode'}</Text>}
+                        <Text dimColor>
+                            Ctrl+O - Verbose mode {toolsExpanded ? <Text color="magenta" bold>ON</Text> : 'OFF'} | Shift+Tab - YOLO {yoloMode ? <Text dimColor color="red" bold>ON</Text> : <Text dimColor>OFF</Text>}
+                        </Text>
+                    </Box>
+
+                    <Box flexDirection="row" justifyContent="space-between">
+                        <Box flexDirection="row">
+                            <Text dimColor>Mode: </Text>
+                            <Text color={mode === 'agent' ? 'blue' : mode === 'plan' ? 'green' : 'yellow'} bold>{mode.toUpperCase()}</Text>
+                            <Text dimColor> | Model: {currentModel}</Text>
+                        </Box>
+                        <Text dimColor>
+                            Context: {messages.length} msgs (~{Math.floor(blocks.reduce((acc: number, b: any) => acc + (b.text?.length || 0), 0) / 4 + messages.reduce((acc: number, m: any) => acc + JSON.stringify(m).length, 0) / 4).toLocaleString()} tokens)
+                        </Text>
+                    </Box>
+                </>
+            )}
         </Box>
-      )}
-
-      {!isStreaming && !isSelectingModel && !isFetchingModels && !isSelectingSession && !isSelectingSkillTarget && !isEnteringSkillName && (
-        <Box marginTop={1}>
-          <Text color="cyan" bold>❯ </Text>
-          <SafeTextInput
-            value={query}
-            onChange={setQuery}
-            onSubmit={handleSubmit}
-          />
-        </Box>
-      )}
-
-      {!isExiting && (
-        <>
-          <Box marginTop={1} flexDirection="row" justifyContent="space-between">
-            {exitPrompted ? <Text color="red" bold>Press Ctrl+C again to exit.</Text> : <Text dimColor>Ctrl+C - Exit {isStreaming ? '| Esc - Stop' : '| Tab - Cycle Mode'}</Text>}
-            <Text dimColor>
-              Ctrl+O - Verbose mode {toolsExpanded ? <Text color="magenta" bold>ON</Text> : 'OFF'} | Shift+Tab - YOLO {yoloMode ? <Text dimColor color="red" bold>ON</Text> : <Text dimColor>OFF</Text>}
-            </Text>
-          </Box>
-
-          <Box flexDirection="row" justifyContent="space-between">
-            <Box flexDirection="row">
-              <Text dimColor>Mode: </Text>
-              <Text color={mode === 'agent' ? 'blue' : mode === 'plan' ? 'green' : 'yellow'} bold>{mode.toUpperCase()}</Text>
-              <Text dimColor> | Model: {currentModel}</Text>
-            </Box>
-            <Text dimColor>
-              Context: {messages.length} msgs (~{Math.floor(blocks.reduce((acc: number, b: any) => acc + (b.text?.length || 0), 0) / 4 + messages.reduce((acc: number, m: any) => acc + JSON.stringify(m).length, 0) / 4).toLocaleString()} tokens)
-            </Text>
-          </Box>
-        </>
-      )}
-    </Box>
-  );
+    );
 }

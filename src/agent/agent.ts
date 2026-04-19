@@ -1,10 +1,12 @@
 import type { AgentProvider, StreamPart, ToolSet, ToolContext } from './types.js';
+import { ContextManager } from './context-manager.js';
 
 export interface ToolLoopAgentSettings {
     provider: AgentProvider;
     systemInstruction?: string;
     tools?: ToolSet;
     onConfirm?: (tool: { id: string; name: string; input: any }) => Promise<boolean>;
+    maxContextTokens?: number;
 }
 
 export class ToolLoopAgent {
@@ -12,17 +14,28 @@ export class ToolLoopAgent {
     private systemInstruction?: string;
     private tools?: ToolSet;
     private onConfirm?: (tool: { id: string; name: string; input: any }) => Promise<boolean>;
+    private contextManager: ContextManager;
 
     constructor(settings: ToolLoopAgentSettings) {
         this.provider = settings.provider;
         this.systemInstruction = settings.systemInstruction;
         this.tools = settings.tools;
         this.onConfirm = settings.onConfirm;
+        this.contextManager = new ContextManager(settings.maxContextTokens || 180000);
     }
 
     async *stream(messages: any[]): AsyncGenerator<StreamPart, void, unknown> {
         while (true) {
             const currentTools = [];
+            
+            if (this.contextManager.shouldCompact(messages)) {
+                // Yield visually that compaction occurred if TUI wants it
+                yield { type: 'compaction' } as any; 
+                const compacted = this.contextManager.compact(messages);
+                messages.length = 0;
+                messages.push(...compacted);
+            }
+
             const stream = this.provider.stream({
                 systemInstruction: this.systemInstruction,
                 messages,

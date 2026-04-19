@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { exec, spawn, ChildProcess } from 'child_process';
+import striptags from 'striptags';
+import { search } from 'duck-duck-scrape';
 import { promisify } from 'util';
 import crypto from 'node:crypto';
 import * as diff from 'diff';
@@ -33,12 +35,13 @@ export interface RunningCommand {
     id: string;
     process: ChildProcess;
     outputBuffer: string;
+    status: 'running' | 'done';
     exitCode: number | null;
 }
 export const activeCommands = new Map<string, RunningCommand>();
 
 export const allTools: ToolSet = {
-    editJson: {
+    EditJson: {
         description: 'Safely parse, modify, and overwrite JSON files iteratively using direct key paths without manually text replacing blocks. Target must be a valid JSON file. Path should be dot-delimited (e.g. "scripts.build"). If you intend to delete a key, leave operation as "delete". Ensure your JSON injection values are structurally valid parameters.',
         requiresConfirmation: true,
         parameters: {
@@ -80,7 +83,7 @@ export const allTools: ToolSet = {
             }
         }
     },
-    searchCodebase: {
+    GrepSearch: {
         description: 'Fast concurrent worker-threaded codebase search traversing all files internally without needing ripgrep installed locally. Best for finding references, tokens, or variables globally.',
         parameters: {
             type: 'object',
@@ -112,7 +115,7 @@ export const allTools: ToolSet = {
             }
         }
     },
-    readClipboard: {
+    ReadClipboard: {
         description: 'Natively retrieves the text payload currently locked inside the host users operating system clipboard queue.',
         parameters: { type: 'object', properties: {} },
         execute: async () => {
@@ -135,7 +138,7 @@ export const allTools: ToolSet = {
             }
         }
     },
-    writeClipboard: {
+    WriteClipboard: {
         description: 'Injects an arbitrary string buffer directly into the host users OS clipboard queue natively.',
         requiresConfirmation: true,
         parameters: {
@@ -164,242 +167,262 @@ export const allTools: ToolSet = {
             }
         }
     },
-    listDirectory: {
-        description: 'List contents of a directory',
+    ListDir: {
+        description: "List the contents of a directory, i.e. all files and subdirectories.",
         parameters: {
             type: 'object',
-            properties: { path: { type: 'string' } },
+            properties: { path: { type: 'string', description: 'Path to list contents of, should be absolute path to a directory.' } },
             required: ['path']
         },
-        execute: async (args: any) => {
+        execute: async ({ path: directoryPath }: any) => {
             try {
-                const fullPath = path.resolve(args.path);
-                const files = fs.readdirSync(fullPath, { withFileTypes: true });
-                return {
-                    success: true,
-                    path: fullPath,
-                    items: files.map(f => ({ name: f.name, type: f.isDirectory() ? 'directory' : 'file' }))
-                };
+                const resolved = path.resolve(directoryPath);
+                const entries = fs.readdirSync(resolved, { withFileTypes: true });
+                const results = [];
+                for (const entry of entries) {
+                    if (entry.isFile()) {
+                        try {
+                            const stats = fs.statSync(path.join(resolved, entry.name));
+                            results.push(`${entry.name} - File (${stats.size} bytes)`);
+                        } catch {
+                            results.push(`${entry.name} - File`);
+                        }
+                    } else if (entry.isDirectory()) {
+                        results.push(`${entry.name}/ - Directory`);
+                    }
+                }
+                return { success: true, path: resolved, content: results.join('\n') };
             } catch (err: any) {
                 return { success: false, error: err.message };
             }
         }
     },
-    readFile: {
-        description: 'Read a file',
+    ViewFile: {
+        description: "View the contents of a file from the local filesystem.",
         parameters: {
             type: 'object',
-            properties: { path: { type: 'string' } },
+            properties: {
+                path: { type: 'string', description: 'Absolute or relative path to the file to read.' },
+                startLine: { type: 'number', description: 'Optional. Startline to view, 1-indexed as usual, inclusive.' },
+                endLine: { type: 'number', description: 'Optional. Endline to view, 1-indexed as usual, inclusive.' }
+            },
             required: ['path']
         },
-        execute: async (args: any) => {
+        execute: async ({ path: filePath, startLine, endLine }: any) => {
             try {
-                const fullPath = path.resolve(args.path);
-                const content = fs.readFileSync(fullPath, 'utf8');
-                return { success: true, path: fullPath, content: content.slice(0, 100000) };
+                const resolved = path.resolve(filePath);
+                const content = fs.readFileSync(resolved, 'utf8');
+                if (startLine || endLine) {
+                    const lines = content.split('\n');
+                    const start = Math.max(0, (startLine || 1) - 1);
+                    const end = endLine ? Math.min(lines.length, endLine) : lines.length;
+                    return { success: true, path: resolved, content: lines.slice(start, end).join('\n') };
+                }
+                return { success: true, path: resolved, content };
             } catch (err: any) {
                 return { success: false, error: err.message };
             }
         }
     },
-    writeFile: {
-        description: 'Write to a file',
-        requiresConfirmation: true,
-        parameters: {
-            type: 'object',
-            properties: { path: { type: 'string' }, content: { type: 'string' } },
-            required: ['path', 'content']
-        },
-        execute: async (args: any) => {
-            try {
-                const fullPath = path.resolve(args.path);
-                fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-
-                fs.writeFileSync(fullPath, args.content);
-                return { success: true, path: fullPath, bytesWritten: Buffer.byteLength(args.content) };
-            } catch (err: any) {
-                return { success: false, error: err.message };
-            }
-        }
-    },
-    editFile: {
-        description: 'Edit an existing file by replacing a specific block of text. You must provide the exact old text to be replaced and the new text.',
+    WriteToFile: {
+        description: "Create new files. By default errors if TargetFile exists to prevent overwrite.",
         requiresConfirmation: true,
         parameters: {
             type: 'object',
             properties: {
-                path: { type: 'string', description: 'Path to the file to edit' },
-                oldText: { type: 'string', description: 'The exact string to find and replace. Must match perfectly, including indentation.' },
-                newText: { type: 'string', description: 'The string to replace oldText with.' }
+                path: { type: 'string', description: 'Path to the file to create and write code to.' },
+                content: { type: 'string', description: 'The code contents to write to the file.' },
+                overwrite: { type: 'boolean', description: 'Set this to true to overwrite an existing file.' }
             },
-            required: ['path', 'oldText', 'newText']
+            required: ['path', 'content']
         },
-        execute: async (args: any) => {
+        execute: async ({ path: filePath, content, overwrite }: any) => {
             try {
-                const fullPath = path.resolve(args.path);
-                if (!fs.existsSync(fullPath)) {
-                    return { success: false, error: 'File does not exist: ' + fullPath };
+                const resolved = path.resolve(filePath);
+                if (fs.existsSync(resolved) && !overwrite) {
+                    return { success: false, error: `File already exists at ${filePath}. Use overwrite=true if you are sure.` };
                 }
-                const content = fs.readFileSync(fullPath, 'utf8');
+                fs.mkdirSync(path.dirname(resolved), { recursive: true });
+                fs.writeFileSync(resolved, content, 'utf8');
+                return { success: true, path: resolved, bytesWritten: Buffer.byteLength(content) };
+            } catch (err: any) {
+                return { success: false, error: err.message };
+            }
+        }
+    },
+    ReplaceFileContent: {
+        description: "Edit an existing file by making a single contiguous block of edits.",
+        requiresConfirmation: true,
+        parameters: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'The target file to modify.' },
+                targetContent: { type: 'string', description: 'The exact character-sequence to be replaced, including whitespace.' },
+                replacementContent: { type: 'string', description: 'The content to replace the target content with.' },
+                allowMultiple: { type: 'boolean', description: 'If true, replace multiple occurrences.' }
+            },
+            required: ['path', 'targetContent', 'replacementContent']
+        },
+        execute: async ({ path: filePath, targetContent, replacementContent, allowMultiple }: any) => {
+            try {
+                const resolved = path.resolve(filePath);
+                if (!fs.existsSync(resolved)) return { success: false, error: 'File does not exist: ' + resolved };
+                let content = fs.readFileSync(resolved, 'utf-8');
+                const occurrences = content.split(targetContent).length - 1;
 
-                const occurrences = content.split(args.oldText).length - 1;
-                if (occurrences === 0) {
-                    return { success: false, error: 'The provided oldText was not found in the file. Make sure to match whitespace perfectly.' };
-                } else if (occurrences > 1) {
-                    return { success: false, error: 'The provided oldText was found multiple times in the file. Provide a larger block of text to uniquely match.' };
-                }
+                if (occurrences === 0) return { success: false, error: 'Target text not found in file. Whitespace must match exactly.' };
+                if (occurrences > 1 && !allowMultiple) return { success: false, error: `Multiple occurrences found (${occurrences}). Set allowMultiple=true if intended.` };
 
-                const newContent = content.replace(args.oldText, args.newText);
-                const diffPatch = diff.createPatch(args.path, content, newContent);
+                const newContent = allowMultiple ? content.split(targetContent).join(replacementContent) : content.replace(targetContent, replacementContent);
 
+                const diffPatch = diff.createPatch(filePath, content, newContent);
                 const client = await getConnectedIdeClient();
                 if (client && client.isDiffingEnabled()) {
-                    client.openDiff(fullPath, newContent).then(res => {
+                    client.openDiff(resolved, newContent).then(res => {
                         if (res.status === 'accepted' && res.content !== undefined && res.content !== newContent) {
-                            fs.writeFileSync(fullPath, res.content);
+                            fs.writeFileSync(resolved, res.content);
                         }
                     }).catch(() => { });
                     await new Promise(r => setTimeout(r, 150));
                 }
 
-                fs.writeFileSync(fullPath, newContent);
-                return { success: true, path: fullPath, message: 'File successfully edited.', diff: diffPatch };
+                fs.writeFileSync(resolved, newContent, 'utf-8');
+                return { success: true, message: `Successfully replaced ${allowMultiple ? occurrences : 1} occurrences in ${filePath}`, diff: diffPatch };
             } catch (err: any) {
                 return { success: false, error: err.message };
             }
         }
     },
-    runCommand: {
-        description: 'Run a shell command. By default, it waits up to 5000ms for the command to finish. If the command takes longer, it leaves it running in the background and returns a commandId. You can use checkCommandStatus to read its ongoing output and sendCommandInput to interact with it.',
+    RunCommand: {
+        description: "PROPOSE a command to run on behalf of the user in the terminal. Handles background tasks and long-running processes natively.",
         requiresConfirmation: true,
         parameters: {
             type: 'object',
             properties: {
-                command: { type: 'string' },
-                waitMs: { type: 'number', description: 'How long to wait for the command to finish before detaching to the background (default 5000ms)' }
+                command: { type: 'string', description: 'The exact command line string to execute.' },
+                cwd: { type: 'string', description: 'The current working directory for the command. Will default to project root if left empty.' },
+                waitMsBeforeAsync: { type: 'number', description: 'Optional wait time before returning if command is long running.' }
             },
             required: ['command']
         },
-        execute: async (args: any) => {
+        execute: async ({ command, cwd, waitMsBeforeAsync }: any) => {
             try {
                 const id = crypto.randomUUID();
-                const waitMs = args.waitMs || 5000;
+                const child = spawn(command, { shell: true, cwd: cwd ? path.resolve(cwd) : process.cwd() });
 
-                const child = spawn(args.command, { shell: true });
-
-                const runningCmd: RunningCommand = {
+                const cmdState: RunningCommand = {
                     id,
                     process: child,
                     outputBuffer: '',
+                    status: 'running',
                     exitCode: null
                 };
-                activeCommands.set(id, runningCmd);
+                activeCommands.set(id, cmdState);
 
-                child.stdout?.on('data', (data) => runningCmd.outputBuffer += data.toString());
-                child.stderr?.on('data', (data) => runningCmd.outputBuffer += data.toString());
+                child.stdout?.on('data', (data) => { cmdState.outputBuffer += data.toString(); });
+                child.stderr?.on('data', (data) => { cmdState.outputBuffer += data.toString(); });
+                child.on('close', (code) => {
+                    cmdState.status = 'done';
+                    cmdState.exitCode = code;
+                });
+                child.on('error', (err) => {
+                    cmdState.status = 'done';
+                    cmdState.outputBuffer += `\n[System Error]: ${err.message}`;
+                });
 
-                return new Promise((resolve) => {
-                    let timeoutCompleted = false;
+                const waitTime = waitMsBeforeAsync || 5000;
 
-                    const timeout = setTimeout(() => {
-                        if (runningCmd.exitCode === null) {
-                            timeoutCompleted = true;
-                            const outputSoFar = runningCmd.outputBuffer;
-                            runningCmd.outputBuffer = '';
-                            resolve({
-                                success: true,
-                                status: 'running_in_background',
-                                commandId: id,
-                                outputSoFar
-                            });
+                return await new Promise((resolve) => {
+                    let done = false;
+                    const cleanup = () => {
+                        if (done) return;
+                        done = true;
+                        if (cmdState.status === 'done') {
+                            resolve({ success: cmdState.exitCode === 0, output: `Command exited with code ${cmdState.exitCode}.\nOutput:\n${cmdState.outputBuffer}` });
+                        } else {
+                            resolve({ success: true, status: 'running_in_background', commandId: id, outputSoFar: `Command is running in background. ID: ${id}\nOutput so far:\n${cmdState.outputBuffer}` });
                         }
-                    }, waitMs);
-
-                    child.on('close', (code) => {
-                        runningCmd.exitCode = code;
-                        if (!timeoutCompleted) {
-                            clearTimeout(timeout);
-                            const output = runningCmd.outputBuffer;
-                            activeCommands.delete(id);
-                            if (code !== 0) {
-                                resolve({ success: false, error: `Command exited with code ${code}`, output });
-                            } else {
-                                resolve({ success: true, output });
-                            }
-                        }
-                    });
-
-                    child.on('error', (err) => {
-                        if (!timeoutCompleted) {
-                            clearTimeout(timeout);
-                            activeCommands.delete(id);
-                            resolve({ success: false, error: err.message, output: runningCmd.outputBuffer });
-                        }
-                    });
+                    };
+                    child.once('close', cleanup);
+                    setTimeout(cleanup, waitTime);
                 });
             } catch (err: any) {
                 return { success: false, error: err.message };
             }
         }
     },
-    checkCommandStatus: {
-        description: 'Check the status of a background command and read its recent output.',
+    CommandStatus: {
+        description: "Get the status of a previously executed terminal command by its ID.",
         parameters: {
             type: 'object',
-            properties: { commandId: { type: 'string' } },
+            properties: {
+                commandId: { type: 'string', description: 'ID of the command to get status for' },
+                outputCharacterCount: { type: 'number', description: 'Number of characters to view. Max 5000.' },
+                waitDurationSeconds: { type: 'number', description: 'Seconds to wait for command completion before getting status' }
+            },
             required: ['commandId']
         },
-        execute: async (args: any) => {
-            const cmd = activeCommands.get(args.commandId);
-            if (!cmd) return { success: false, error: 'Command ID not found or already completed.' };
+        execute: async ({ commandId, outputCharacterCount, waitDurationSeconds }: any) => {
+            const cmdState = activeCommands.get(commandId);
+            if (!cmdState) return { success: false, error: `Unknown command ID ${commandId}` };
 
-            const output = cmd.outputBuffer;
-            cmd.outputBuffer = '';
+            if (waitDurationSeconds && cmdState.status === 'running') {
+                await new Promise((resolve) => {
+                    const timeout = setTimeout(resolve, waitDurationSeconds * 1000);
+                    cmdState.process.once('close', () => { clearTimeout(timeout); resolve(undefined); });
+                });
+            }
+
+            const limit = outputCharacterCount || 2000;
+            const out = cmdState.outputBuffer.slice(-limit);
+            cmdState.outputBuffer = out;
+
             return {
                 success: true,
-                status: cmd.exitCode === null ? 'running' : 'exited',
-                exitCode: cmd.exitCode,
-                output
+                status: cmdState.status,
+                exitCode: cmdState.exitCode,
+                output: `Status: ${cmdState.status}\nExit code: ${cmdState.exitCode ?? 'N/A'}\nRecent Output:\n${out}`
             };
         }
     },
-    sendCommandInput: {
-        description: 'Send standard input to a running background command, or terminate it.',
+    SendCommandInput: {
+        description: "Send standard input to a running command or to terminate a command.",
         requiresConfirmation: true,
         parameters: {
             type: 'object',
             properties: {
-                commandId: { type: 'string' },
-                input: { type: 'string', description: 'Text to send to stdin (include \\n if needed)' },
-                terminate: { type: 'boolean', description: 'If true, kills the running command' }
+                commandId: { type: 'string', description: 'The command ID.' },
+                input: { type: 'string', description: 'The input to send to stdin. Include newline characters if needed.' },
+                terminate: { type: 'boolean', description: 'Whether to terminate the command.' }
             },
             required: ['commandId']
         },
-        execute: async (args: any) => {
-            const cmd = activeCommands.get(args.commandId);
-            if (!cmd) return { success: false, error: 'Command ID not found.' };
+        execute: async ({ commandId, input, terminate }: any) => {
+            const cmdState = activeCommands.get(commandId);
+            if (!cmdState) return { success: false, error: `Unknown command ID ${commandId}` };
 
-            if (args.terminate) {
-                cmd.process.kill();
-                return { success: true, message: 'Termination signal sent.' };
+            if (terminate) {
+                cmdState.process.kill();
+                return { success: true, message: `Sent SIGTERM to command ${commandId}` };
             }
 
-            if (args.input !== undefined) {
-                cmd.process.stdin?.write(args.input);
-                return { success: true, message: 'Input written to stdin.' };
+            if (input && cmdState.status === 'running') {
+                cmdState.process.stdin?.write(input);
+                await new Promise(resolve => setTimeout(resolve, 500));
+                return { success: true, message: `Input sent.\nCurrent output:\n${cmdState.outputBuffer.slice(-1000)}` };
             }
 
-            return { success: false, error: 'Must provide either input or terminate.' };
+            return { success: false, error: "No action taken." };
         }
     },
-    subagent: {
+    Subagent: {
         description: 'Spawns a subagent to perform a specific task.',
         parameters: {
             type: 'object',
             properties: {
                 prompt: { type: 'string', description: 'The task to perform' },
                 systemInstruction: { type: 'string', description: 'Optional system instruction for the subagent' },
-                model: { type: 'string', description: 'Optional explicit model name to use, e.g. gemini-3-flash-preview. Leave blank for default.' }
+                model: { type: 'string', description: 'Optional explicit model name to use, e.g. gemini:gemini-3-flash-preview. Leave blank for default.' }
             },
             required: ['prompt']
         },
@@ -427,6 +450,96 @@ export const allTools: ToolSet = {
                 }
 
                 return { success: true, answer: fullText };
+            } catch (err: any) {
+                return { success: false, error: err.message };
+            }
+        }
+    },
+    MultiReplaceFileContent: {
+        description: 'Edit a file using multiple non-contiguous target blocks. Best for complex edits across different parts of a file.',
+        requiresConfirmation: true,
+        parameters: {
+            type: 'object',
+            properties: {
+                path: { type: 'string', description: 'The target file to modify.' },
+                chunks: {
+                    type: 'array',
+                    description: 'A list of chunks to replace.',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            targetContent: { type: 'string', description: 'Exact string to be replaced.' },
+                            replacementContent: { type: 'string', description: 'Content to replace it with.' },
+                            allowMultiple: { type: 'boolean', description: 'If true, multiple occurrences will be replaced. Only use this if you are absolutely certain you want to replace multiple instances of the target content in the file' }
+                        },
+                        required: ['targetContent', 'replacementContent']
+                    }
+                }
+            },
+            required: ['path', 'chunks']
+        },
+        execute: async (args: any) => {
+            try {
+                const fullPath = path.resolve(args.path);
+                if (!fs.existsSync(fullPath)) return { success: false, error: `File not found at ${fullPath}` };
+                let content = fs.readFileSync(fullPath, 'utf8');
+
+                for (let i = 0; i < args.chunks.length; i++) {
+                    const chunk = args.chunks[i];
+                    const occurrences = content.split(chunk.targetContent).length - 1;
+                    if (occurrences === 0) {
+                        return { success: false, error: `Chunk ${i} targetContent not found.` };
+                    } else if (occurrences > 1 && !chunk.allowMultiple) {
+                        return { success: false, error: `Chunk ${i} targetContent found multiple times. Pass allowMultiple=true if intended.` };
+                    }
+                    content = content.split(chunk.targetContent).join(chunk.replacementContent);
+                }
+
+                fs.writeFileSync(fullPath, content);
+                return { success: true, message: `Successfully replaced ${args.chunks.length} chunks.` };
+            } catch (err: any) {
+                return { success: false, error: err.message };
+            }
+        }
+    },
+    SearchWeb: {
+        description: 'Performs a web search for a given query using DuckDuckGo. Returns a summary of relevant information along with URL citations.',
+        parameters: {
+            type: 'object',
+            properties: {
+                domain: { type: 'string', description: 'Optional domain to restrict the search to' },
+                query: { type: 'string' }
+            },
+            required: ['query']
+        },
+        execute: async (args: any) => {
+            try {
+                const searchQuery = args.domain ? `site:${args.domain} ${args.query}` : args.query;
+                const searchResults = await search(searchQuery, { safeSearch: -2 });
+                const results = searchResults.results.slice(0, 5).map(r => ({ title: r.title, url: r.url, description: r.description }));
+                return { success: true, results };
+            } catch (err: any) {
+                return { success: false, error: err.message };
+            }
+        }
+    },
+    ReadUrlContent: {
+        description: 'Fetch content from a URL via HTTP request. Converts HTML to markdown. No JavaScript execution, no authentication.',
+        parameters: {
+            type: 'object',
+            properties: { url: { type: 'string' } },
+            required: ['url']
+        },
+        execute: async ({ url }: any) => {
+            try {
+                const response = await fetch(url);
+                if (!response.ok) return { success: false, error: `HTTP ${response.status} ${response.statusText}` };
+                const text = await response.text();
+                const contentText = text;
+                let clean = striptags(contentText, ['h1', 'h2', 'h3', 'p', 'a', 'b', 'i', 'strong', 'em', 'ul', 'ol', 'li']);
+                clean = clean.replace(/<[^>]*>/g, ' ');
+                clean = clean.replace(/\s+/g, ' ').trim();
+                return { success: true, content: clean.substring(0, 100000) };
             } catch (err: any) {
                 return { success: false, error: err.message };
             }
