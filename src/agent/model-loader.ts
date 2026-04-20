@@ -5,6 +5,7 @@ import { VALID_GEMINI_MODELS } from '@google/gemini-cli-core';
 export interface ModelListing {
     id: string;
     label: string;
+    provider: string;
     group: string;
 }
 
@@ -31,7 +32,7 @@ export async function fetchAvailableModels(): Promise<ModelListing[]> {
         Promise.resolve(
             Array.from(VALID_GEMINI_MODELS as Set<string>)
                 .filter(m => !m.includes('lite') && !m.includes('customtools'))
-                .map(m => ({ id: `gemini:${m}`, label: m, group: 'Google Gemini' }))
+                .map(m => ({ id: `gemini:${m}`, label: m, provider: 'google', group: 'Google Gemini' }))
         )
     );
 
@@ -44,7 +45,7 @@ export async function fetchAvailableModels(): Promise<ModelListing[]> {
                     const list = await client.models.list();
                     return list.data
                         .filter(m => m.id.includes('gpt') || m.id.includes('o1') || m.id.includes('o3'))
-                        .map(m => ({ id: `openai:${m.id}`, label: m.id, group: 'OpenAI' }));
+                        .map(m => ({ id: `openai:${m.id}`, label: m.id, provider: 'openai', group: 'OpenAI' }));
                 } catch { return []; }
             })()
         );
@@ -57,7 +58,7 @@ export async function fetchAvailableModels(): Promise<ModelListing[]> {
                 try {
                     const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
                     const list = await client.models.list();
-                    return list.data.map(m => ({ id: `anthropic:${m.id}`, label: m.id, group: 'Anthropic' }));
+                    return list.data.map(m => ({ id: `anthropic:${m.id}`, label: m.id, provider: 'anthropic', group: 'Anthropic' }));
                 } catch { return []; }
             })()
         );
@@ -71,7 +72,7 @@ export async function fetchAvailableModels(): Promise<ModelListing[]> {
                 const res = await fetchWithTimeout(`${baseURL}/api/tags`);
                 if (!res.ok) return [];
                 const json = await res.json();
-                return json.models.map((m: any) => ({ id: `ollama:${m.name}`, label: m.name, group: 'Ollama (Local)' }));
+                return json.models.map((m: any) => ({ id: `ollama:${m.name}`, label: m.name, provider: 'ollama', group: 'Ollama (Local)' }));
             } catch { return []; }
         })()
     );
@@ -84,7 +85,7 @@ export async function fetchAvailableModels(): Promise<ModelListing[]> {
                 const res = await fetchWithTimeout(`${baseURL}/models`);
                 if (!res.ok) return [];
                 const json = await res.json();
-                return json.data.map((m: any) => ({ id: `lmstudio:${m.id}`, label: m.id, group: 'LMStudio (Local)' }));
+                return json.data.map((m: any) => ({ id: `lmstudio:${m.id}`, label: m.id, provider: 'lmstudio', group: 'LMStudio (Local)' }));
             } catch { return []; }
         })()
     );
@@ -97,7 +98,7 @@ export async function fetchAvailableModels(): Promise<ModelListing[]> {
                 const res = await fetchWithTimeout(`${baseURL}/models`);
                 if (!res.ok) return [];
                 const json = await res.json();
-                return json.data.map((m: any) => ({ id: `vllm:${m.id}`, label: m.id, group: 'vLLM (Local)' }));
+                return json.data.map((m: any) => ({ id: `vllm:${m.id}`, label: m.id, provider: 'vllm', group: 'vLLM (Local)' }));
             } catch { return []; }
         })()
     );
@@ -109,7 +110,7 @@ export async function fetchAvailableModels(): Promise<ModelListing[]> {
                 try {
                     const client = new OpenAI({ apiKey: process.env.OPENROUTER_API_KEY, baseURL: 'https://openrouter.ai/api/v1' });
                     const list = await client.models.list();
-                    return list.data.map(m => ({ id: `openrouter:${m.id}`, label: m.id, group: 'OpenRouter' }));
+                    return list.data.map(m => ({ id: `openrouter:${m.id}`, label: m.id, provider: 'openrouter', group: 'OpenRouter' }));
                 } catch { return []; }
             })()
         );

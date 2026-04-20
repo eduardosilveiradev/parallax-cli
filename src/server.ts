@@ -33,12 +33,26 @@ export function getHistory(sessionId: string) {
     }
 }
 
+export const activeConfirmations = new Map<string, (approved: boolean) => void>();
+
 export const startServer = async (cliSessionId: string, model: string = 'gemini:gemini-3-flash-preview') => {
     const app = express();
     app.use(cors());
     app.use(express.json());
 
     app.get('/ping', (req, res) => res.json({ status: 'ok', sessionId: cliSessionId }));
+
+    app.post('/confirm', (req, res) => {
+        const { toolCallId, approve } = req.body;
+        const resolve = activeConfirmations.get(toolCallId);
+        if (resolve) {
+            resolve(!!approve);
+            activeConfirmations.delete(toolCallId);
+            res.json({ success: true });
+        } else {
+            res.status(404).json({ error: 'Confirmation for this tool call not found or already processed.' });
+        }
+    });
 
     app.get('/history/:sessionId', (req, res) => {
         res.json(getHistory(req.params.sessionId));
@@ -66,12 +80,12 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
                 return { id, mtime: stat.mtimeMs, messageCount: history.messages?.length || 0, lastMessage };
             });
             sessions.sort((a, b) => b.mtime - a.mtime);
-            
+
             // make sure the current CLI session is always returned even if it doesn't have a file yet
             if (!sessions.find(s => s.id === cliSessionId)) {
                 sessions.unshift({ id: cliSessionId, mtime: Date.now(), messageCount: 0, lastMessage: 'Current UI Session' });
             }
-            
+
             res.json(sessions);
         } catch (e) {
             res.status(500).json({ error: 'Failed to list sessions' });
@@ -95,7 +109,15 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
 
     app.get('/models', async (req, res) => {
         try {
-            const models = await fetchAvailableModels();
+            let models = await fetchAvailableModels();
+            models = models.map(m => {
+                return {
+                    id: m.id,
+                    label: m.label.split("-")[0].charAt(0).toUpperCase() + m.label.split("-")[0].slice(1) + " " + m.label.split("-").slice(1).join(" "),
+                    group: m.group,
+                    provider: m.provider,
+                }
+            })
             res.json(models);
         } catch (e) {
             res.status(500).json({ error: 'Failed to fetch models' });
@@ -103,7 +125,7 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
     });
 
     app.post('/prompt', async (req, res) => {
-        const { prompt, sessionId = cliSessionId } = req.body;
+        const { prompt, sessionId = cliSessionId = '', yolo = false } = req.body;
         if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
 
         console.log(`\n--- NEW PROMPT ---`);
@@ -115,14 +137,14 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
         res.setHeader('Connection', 'keep-alive');
         res.setHeader('X-Accel-Buffering', 'no');
         res.flushHeaders();
-        
+
         const mcpTools = await loadMcpTools();
         const combinedTools = { ...allTools, ...mcpTools };
-        
+
         const provider = ProviderFactory.create(model);
-        
+
         let { blocks, messages } = getHistory(sessionId);
-        
+
         // Add latest user input
         messages.push(provider.createUserMessage(prompt));
         blocks.push({ type: 'user', id: crypto.randomUUID(), text: prompt });
@@ -133,7 +155,7 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
         if (fs.existsSync(parallaxMdPath)) {
             sysInstruct += `\n\n# Project Architecture (PARALLAX.md)\n${fs.readFileSync(parallaxMdPath, 'utf8')}`;
         }
-        
+
         const wsSkills = loadWorkspaceSkills(process.cwd());
         if (wsSkills.length > 0) {
             sysInstruct += `\n\n# Available Skills\nYou have access to the following specialized skills.\n`;
@@ -147,9 +169,10 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
             tools: combinedTools,
             systemInstruction: sysInstruct,
             onConfirm: async (tc) => {
-                // If the desktop app wants confirmation, we send a special event and wait
-                // For now, YOLO mode true for RPC requests to not block stream
-                return true;
+                if (yolo) return true;
+                return new Promise<boolean>((resolve) => {
+                    activeConfirmations.set(tc.id, resolve);
+                });
             }
         });
 
@@ -191,7 +214,7 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
                         assistantBlockIndex = blocks.length;
                         blocks.push({ type: 'assistant', id: currentAssistantBlockId, text: '' });
                     }
-                    
+
                     const textChunk = part.text || '';
                     fullAssistantText += textChunk;
                     sendEvent({ type: 'text-delta', id: currentAssistantBlockId, text: textChunk });
@@ -203,7 +226,7 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
                         thinkingStartTime = Date.now();
                         blocks.push({ type: 'thinking', id: currentThinkingBlockId, text: '', startTime: thinkingStartTime });
                     }
-                    
+
                     const thinkChunk = part.text || '';
                     sendEvent({ type: 'thinking-delta', id: currentThinkingBlockId, text: thinkChunk });
                     blocks[thinkingBlockIndex].text += thinkChunk;
@@ -212,8 +235,9 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
                     const tcId = part.toolCallId || crypto.randomUUID();
                     console.log(`\n[Tool Call] -> ${part.toolName}`);
                     console.log(JSON.stringify(part.input, null, 2));
-                    sendEvent({ type: 'tool-call', name: part.toolName, input: part.input, id: tcId });
-                    blocks.push({ type: 'tool-call', id: tcId, call: { id: tcId, name: part.toolName || '', args: part.input, status: 'calling' } });
+                    const awaitConfirm = !yolo;
+                    sendEvent({ type: 'tool-call', name: part.toolName, input: part.input, id: tcId, awaitConfirm });
+                    blocks.push({ type: 'tool-call', id: tcId, awaitConfirm, call: { id: tcId, name: part.toolName || '', args: part.input, status: 'calling' } });
                 } else if (part.type === 'tool-result') {
                     console.log(`\n[Tool Result] <- ${part.toolCallId}`);
                     let outStr = typeof part.output === 'string' ? part.output : JSON.stringify(part.output);

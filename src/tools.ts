@@ -331,6 +331,7 @@ export const allTools: ToolSet = {
                 const newContent = AllowMultiple ? content.split(TargetContent).join(ReplacementContent) : content.replace(TargetContent, ReplacementContent);
 
                 const diffPatch = diff.createPatch(TargetFile, content, newContent);
+                /*
                 const client = await getConnectedIdeClient();
                 if (client && client.isDiffingEnabled()) {
                     client.openDiff(resolved, newContent).then(res => {
@@ -340,6 +341,7 @@ export const allTools: ToolSet = {
                     }).catch(() => { });
                     await new Promise(r => setTimeout(r, 150));
                 }
+                */
 
                 fs.writeFileSync(resolved, newContent, 'utf-8');
                 return { success: true, message: `Successfully replaced ${AllowMultiple ? occurrences : 1} occurrences in ${TargetFile}`, diff: diffPatch };
@@ -505,53 +507,6 @@ export const allTools: ToolSet = {
                 }
 
                 return { success: true, answer: fullText };
-            } catch (err: any) {
-                return { success: false, error: err.message };
-            }
-        }
-    },
-    MultiReplaceFileContent: {
-        description: 'Edit a file using multiple non-contiguous target blocks. Best for complex edits across different parts of a file.',
-        requiresConfirmation: true,
-        parameters: {
-            type: 'object',
-            properties: {
-                path: { type: 'string', description: 'The target file to modify.' },
-                chunks: {
-                    type: 'array',
-                    description: 'A list of chunks to replace.',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            targetContent: { type: 'string', description: 'Exact string to be replaced.' },
-                            replacementContent: { type: 'string', description: 'Content to replace it with.' },
-                            allowMultiple: { type: 'boolean', description: 'If true, multiple occurrences will be replaced. Only use this if you are absolutely certain you want to replace multiple instances of the target content in the file' }
-                        },
-                        required: ['targetContent', 'replacementContent']
-                    }
-                }
-            },
-            required: ['path', 'chunks']
-        },
-        execute: async (args: any) => {
-            try {
-                const fullPath = path.resolve(args.path);
-                if (!fs.existsSync(fullPath)) return { success: false, error: `File not found at ${fullPath}` };
-                let content = fs.readFileSync(fullPath, 'utf8');
-
-                for (let i = 0; i < args.chunks.length; i++) {
-                    const chunk = args.chunks[i];
-                    const occurrences = content.split(chunk.targetContent).length - 1;
-                    if (occurrences === 0) {
-                        return { success: false, error: `Chunk ${i} targetContent not found.` };
-                    } else if (occurrences > 1 && !chunk.allowMultiple) {
-                        return { success: false, error: `Chunk ${i} targetContent found multiple times. Pass allowMultiple=true if intended.` };
-                    }
-                    content = content.split(chunk.targetContent).join(chunk.replacementContent);
-                }
-
-                fs.writeFileSync(fullPath, content);
-                return { success: true, message: `Successfully replaced ${args.chunks.length} chunks.` };
             } catch (err: any) {
                 return { success: false, error: err.message };
             }
