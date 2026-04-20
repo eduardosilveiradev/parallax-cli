@@ -12,7 +12,7 @@ Parallax is a high-performance, terminal-native AI coding assistant designed for
 
 ## 2. The Tooling & Capability System
 
-*   **Native Tools (`src/tools.ts`)**: A suite of asynchronous primitives for filesystem manipulation (`ViewFile`, `WriteToFile`, `ReplaceFileContent`), codebase exploration (`GrepSearch`, `ListDir`), and system interaction (`RunCommand`, `ReadClipboard`).
+*   **Native Tools (`src/tools.ts`)**: A suite of asynchronous primitives for filesystem manipulation (`ViewFile`, `WriteToFile`, `ReplaceFileContent`, `MultiReplaceFileContent`), codebase exploration (`GrepSearch`, `ListDir`), and system interaction (`RunCommand`, `ReadClipboard`).
 *   **Model Context Protocol (MCP) (`src/mcp.ts`)**: Dynamically connects to external MCP servers (e.g., git, fetch) via `StdioClientTransport`. It discovers and injects remote tools as native agent capabilities, configurable via `~/.parallax/mcp-config.json`.
 *   **Skill System (`src/skills.ts`)**: An extensible system that discovers `SKILL.md` files in workspace-local (`.agents/`) or global (`~/.agents/`) directories. These provide specialized instructions and can be loaded on-demand via the `loadSkill` tool.
 *   **Multi-Agent Coordination**: Features a master-coordinator pattern (accessible via `/parallax`) where a high-tier model orchestrates specialized subagents to solve complex, multi-faceted tasks concurrently.
@@ -30,6 +30,7 @@ Parallax is a high-performance, terminal-native AI coding assistant designed for
 *   **Command Suite**: A comprehensive set of slash commands for environment control:
     *   `/model`: Hot-switch between AI providers.
     *   `/init`: Re-generates this architectural overview to maintain agent alignment.
+    *   `/compact`: Compresses history to stay within context limits.
     *   `/commit`, `/commit:pr`: Autonomous Git workflow integration for committing and submitting pull requests.
     *   `/skills`: Interactive installer for adding new capabilities from external repositories.
 
@@ -37,7 +38,8 @@ Parallax is a high-performance, terminal-native AI coding assistant designed for
 
 *   **Runtime**: Powered by `Node.js` and `tsx` for high-performance TypeScript execution.
 *   **LLM Integration**: Utilizes `@google/genai`, Vercel `ai` SDK, and provider-specific SDKs.
-*   **Search**: Implements `threadedSearch` for fast, local codebase indexing without external dependencies.
+*   **Search**: Implements `threadedSearch` in `fast-search.ts` for rapid local codebase indexing without external dependencies.
 *   **Safety**: Implements strict abort controllers for interrupting rogue generations and provides signal handling for clean exits and process cleanup.
+*   **IPC & Server**: Uses an Express-based server (`src/server.ts`) and IPC (`src/ipc.ts`) for handling external events and maintaining state across sessions.
 
 This documentation serves as the primary system prompt and ground truth for the Parallax agent, ensuring consistent behavior and architectural awareness across sessions.
