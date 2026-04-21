@@ -6,12 +6,15 @@ import { search } from 'duck-duck-scrape';
 import { promisify } from 'util';
 import crypto from 'node:crypto';
 import * as diff from 'diff';
+import os from 'os';
 import { IdeClient } from '@google/gemini-cli-core';
 import { ProviderFactory } from './agent/provider-factory.js';
 import type { ToolSet, ToolContext } from './agent/types.js';
 import { ToolLoopAgent } from './agent/agent.js';
 import { GeminiProvider } from './agent/gemini-provider.js';
 import { threadedSearch } from './agent/fast-search.js';
+import { waitForToolResponse } from './tool-io.js';
+import { sessionModes, getHistoryPath } from './session-state.js';
 
 const execAsync = promisify(exec);
 
@@ -41,6 +44,210 @@ export interface RunningCommand {
 export const activeCommands = new Map<string, RunningCommand>();
 
 export const allTools: ToolSet = {
+    AskQuestion: {
+        description: 'Collect structured multiple-choice answers from the user. Blocks until the user responds via the UI.',
+        parameters: {
+            type: 'object',
+            properties: {
+                title: { type: 'string' },
+                questions: {
+                    type: 'array',
+                    minItems: 1,
+                    items: {
+                        type: 'object',
+                        properties: {
+                            id: { type: 'string' },
+                            prompt: { type: 'string' },
+                            allow_multiple: { type: 'boolean' },
+                            options: {
+                                type: 'array',
+                                minItems: 2,
+                                items: {
+                                    type: 'object',
+                                    properties: {
+                                        id: { type: 'string' },
+                                        label: { type: 'string' }
+                                    },
+                                    required: ['id', 'label']
+                                }
+                            }
+                        },
+                        required: ['id', 'prompt', 'options']
+                    }
+                }
+            },
+            required: ['questions']
+        },
+        execute: async (args: any, context?: ToolContext) => {
+            if (!context?.toolCallId) return { success: false, error: 'AskQuestion requires toolCallId in ToolContext' };
+            const payload = await waitForToolResponse(context.toolCallId);
+            if (payload?.cancelled) return { success: false, error: 'User cancelled question prompt.' };
+            return { success: true, answers: payload.answers || payload };
+        }
+    },
+    CreatePlan: {
+        description: 'Create a structured implementation plan artifact and persist it under ~/.parallax/brain/<artifactId>.md.',
+        parameters: {
+            type: 'object',
+            properties: {
+                name: { type: 'string' },
+                overview: { type: 'string' },
+                plan: { type: 'string' },
+                todos: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            id: { type: 'string' },
+                            content: { type: 'string' }
+                        },
+                        required: ['id', 'content']
+                    }
+                }
+            }
+        },
+        execute: async (args: any) => {
+            try {
+                const artifactId = crypto.randomUUID();
+                const brainDir = path.join(os.homedir(), '.parallax', 'brain');
+                fs.mkdirSync(brainDir, { recursive: true });
+
+                const mdParts: string[] = [];
+                if (args?.name) mdParts.push(`## ${String(args.name)}`);
+                if (args?.overview) mdParts.push(String(args.overview));
+                if (args?.plan) mdParts.push(String(args.plan));
+                if (Array.isArray(args?.todos) && args.todos.length > 0) {
+                    mdParts.push('## Todos');
+                    for (const t of args.todos) {
+                        mdParts.push(`- [ ] ${t.content}`);
+                    }
+                }
+                const markdown = mdParts.join('\n\n').trim() + '\n';
+
+                const filePath = path.join(brainDir, `${artifactId}.md`);
+                fs.writeFileSync(filePath, markdown, 'utf8');
+                return { success: true, artifactId, path: filePath, markdown };
+            } catch (err: any) {
+                return { success: false, error: err.message };
+            }
+        }
+    },
+    TodoWrite: {
+        description: 'Create and manage a structured task list for the current session.',
+        parameters: {
+            type: 'object',
+            properties: {
+                todos: {
+                    type: 'array',
+                    minItems: 2,
+                    items: {
+                        type: 'object',
+                        properties: {
+                            id: { type: 'string' },
+                            content: { type: 'string' },
+                            status: { type: 'string', enum: ['pending', 'in_progress', 'completed', 'cancelled'] }
+                        },
+                        required: ['id', 'content', 'status']
+                    }
+                },
+                merge: { type: 'boolean' }
+            },
+            required: ['todos', 'merge']
+        },
+        execute: async (args: any, context?: ToolContext) => {
+            try {
+                const sessionId = context?.sessionId;
+                if (!sessionId) return { success: false, error: 'TodoWrite requires sessionId in ToolContext' };
+                const historyPath = getHistoryPath(sessionId);
+
+                let blocks: any[] = [];
+                let messages: any[] = [];
+                let existingTodos: any[] = [];
+                if (fs.existsSync(historyPath)) {
+                    try {
+                        const parsed = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+                        blocks = parsed.blocks || [];
+                        messages = parsed.messages || [];
+                        existingTodos = Array.isArray(parsed.todos) ? parsed.todos : [];
+                    } catch { }
+                }
+
+                const incoming = Array.isArray(args.todos) ? args.todos : [];
+                let nextTodos: any[] = [];
+                if (args.merge) {
+                    const byId = new Map<string, any>();
+                    for (const t of existingTodos) {
+                        if (t?.id) byId.set(String(t.id), t);
+                    }
+                    for (const t of incoming) {
+                        const id = String(t.id);
+                        const prev = byId.get(id) || { id };
+                        byId.set(id, {
+                            ...prev,
+                            id,
+                            content: t.content ?? prev.content ?? '',
+                            status: t.status ?? prev.status ?? 'pending'
+                        });
+                    }
+                    nextTodos = Array.from(byId.values());
+                } else {
+                    nextTodos = incoming.map((t: any) => ({ id: String(t.id), content: String(t.content), status: String(t.status) }));
+                }
+
+                fs.mkdirSync(path.dirname(historyPath), { recursive: true });
+                fs.writeFileSync(historyPath, JSON.stringify({ blocks, messages, todos: nextTodos }, null, 2));
+                return { success: true, todos: nextTodos };
+            } catch (err: any) {
+                return { success: false, error: err.message };
+            }
+        }
+    },
+    SwitchMode: {
+        description: 'Switch the interaction mode to better match the current task.',
+        parameters: {
+            type: 'object',
+            properties: {
+                target_mode_id: { type: 'string', enum: ['plan', 'agent', 'debug'] },
+                explanation: { type: 'string' }
+            },
+            required: ['target_mode_id']
+        },
+        execute: async (args: any, context?: ToolContext) => {
+            const sessionId = context?.sessionId;
+            if (!sessionId) return { success: false, error: 'SwitchMode requires sessionId in ToolContext' };
+            const target = String(args.target_mode_id);
+            if (target !== 'plan' && target !== 'agent' && target !== 'debug') {
+                return { success: false, error: `Invalid target_mode_id: ${target}` };
+            }
+            sessionModes.set(sessionId, target as any);
+            return { success: true, mode: target, explanation: args.explanation || '' };
+        }
+    },
+    Task: {
+        description: 'Launch a new agent to handle complex, multi-step tasks autonomously.',
+        parameters: {
+            type: 'object',
+            properties: {
+                description: { type: 'string' },
+                prompt: { type: 'string' },
+                model: { type: 'string' },
+                readonly: { type: 'boolean' },
+                subagent_type: { type: 'string' },
+                run_in_background: { type: 'boolean' }
+            },
+            required: ['description', 'prompt']
+        },
+        execute: async (args: any, context?: ToolContext) => {
+            if (!context) return { success: false, error: 'Context not provided' };
+            const systemInstruction = args.readonly
+                ? 'You are a read-only explorer agent. Do not propose or perform edits. Only report findings.'
+                : 'You are a subagent helping a main agent with a task. Be concise and precise.';
+            return await allTools.Subagent.execute(
+                { prompt: args.prompt, model: args.model, systemInstruction },
+                context
+            );
+        }
+    },
     EditJson: {
         description: 'Safely parse, modify, and overwrite JSON files iteratively using direct key paths without manually text replacing blocks. Target must be a valid JSON file. Path should be dot-delimited (e.g. "scripts.build"). If you intend to delete a key, leave operation as "delete". Ensure your JSON injection values are structurally valid parameters.',
         requiresConfirmation: true,

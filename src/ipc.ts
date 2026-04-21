@@ -23,6 +23,11 @@ function getToolLabel(name: string, args: any, status: 'calling' | 'done', resul
 
   if (isFail) {
     switch (name) {
+      case 'AskQuestion': return `Failed to collect answers`;
+      case 'CreatePlan': return `Failed to create plan`;
+      case 'TodoWrite': return `Failed to update todos`;
+      case 'SwitchMode': return `Failed to switch mode`;
+      case 'Task': return `Task failed`;
       case 'listDirectory': return `Failed to list ${args.path}`;
       case 'readFile': return `Failed to read ${fileName}`;
       case 'writeFile': return `Failed to write ${fileName}`;
@@ -35,6 +40,11 @@ function getToolLabel(name: string, args: any, status: 'calling' | 'done', resul
   }
 
   switch (name) {
+    case 'AskQuestion': return isDone ? `Collected answers` : `Asking questions`;
+    case 'CreatePlan': return isDone ? `Created plan` : `Creating plan`;
+    case 'TodoWrite': return isDone ? `Updated todos` : `Updating todos`;
+    case 'SwitchMode': return isDone ? `Switched mode` : `Switching mode`;
+    case 'Task': return isDone ? `Task finished` : `Running task`;
     case 'listDirectory': return isDone ? `Listed ${args.path}` : `Listing ${args.path}`;
     case 'readFile': return isDone ? `Read ${fileName}` : `Reading ${fileName}`;
     case 'writeFile': return isDone ? `Wrote ${fileName}` : `Writing ${fileName}`;

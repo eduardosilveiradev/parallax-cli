@@ -7,6 +7,7 @@ export interface ToolLoopAgentSettings {
     tools?: ToolSet;
     onConfirm?: (tool: { id: string; name: string; input: any }) => Promise<boolean>;
     maxContextTokens?: number;
+    toolContextBase?: Partial<ToolContext>;
 }
 
 export class ToolLoopAgent {
@@ -15,6 +16,7 @@ export class ToolLoopAgent {
     private tools?: ToolSet;
     private onConfirm?: (tool: { id: string; name: string; input: any }) => Promise<boolean>;
     private contextManager: ContextManager;
+    private toolContextBase?: Partial<ToolContext>;
 
     constructor(settings: ToolLoopAgentSettings) {
         this.provider = settings.provider;
@@ -22,6 +24,7 @@ export class ToolLoopAgent {
         this.tools = settings.tools;
         this.onConfirm = settings.onConfirm;
         this.contextManager = new ContextManager(settings.maxContextTokens || 180000);
+        this.toolContextBase = settings.toolContextBase;
     }
 
     async *stream(messages: any[]): AsyncGenerator<StreamPart, void, unknown> {
@@ -64,10 +67,12 @@ export class ToolLoopAgent {
                     const toolDef = this.tools?.[tc.name];
                     if (toolDef) {
                         const context: ToolContext = {
+                            ...(this.toolContextBase || {}),
                             provider: this.provider,
                             tools: this.tools!,
                             onConfirm: this.onConfirm
                         };
+                        context.toolCallId = tc.id;
 
                         let executionPromise: Promise<any>;
                         if (toolDef.requiresConfirmation && this.onConfirm) {

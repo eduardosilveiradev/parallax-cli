@@ -30,6 +30,8 @@ export interface ToolContext {
     provider: AgentProvider;
     tools: ToolSet;
     onConfirm?: (tool: { id: string; name: string; input: any }) => Promise<boolean>;
+    toolCallId?: string;
+    sessionId?: string;
 }
 
 export interface ToolDefinition {

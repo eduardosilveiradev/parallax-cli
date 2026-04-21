@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
-import os from 'os';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { ToolLoopAgent } from './agent/agent.js';
@@ -12,24 +12,24 @@ import { loadMcpTools } from './mcp.js';
 import { loadWorkspaceSkills } from './skills.js';
 import { getSystemPrompt } from './system-prompt.js';
 import { fetchAvailableModels } from './agent/model-loader.js';
+import { resolveToolResponse } from './tool-io.js';
+import { getHistoryPath, sessionModes } from './session-state.js';
 
-export function getHistoryPath(sessionId: string) {
-    return path.join(os.homedir(), '.parallax', `${sessionId}.json`);
-}
-
-export function saveMessage(sessionId: string, blocks: any[], messages: any[]) {
+export function saveMessage(sessionId: string, blocks: any[], messages: any[], extra: Record<string, any> = {}) {
     const historyPath = getHistoryPath(sessionId);
     fs.mkdirSync(path.dirname(historyPath), { recursive: true });
-    fs.writeFileSync(historyPath, JSON.stringify({ blocks, messages }, null, 2));
+    fs.writeFileSync(historyPath, JSON.stringify({ blocks, messages, ...extra }, null, 2));
 }
 
 export function getHistory(sessionId: string) {
     const historyPath = getHistoryPath(sessionId);
-    if (!fs.existsSync(historyPath)) return { blocks: [], messages: [] };
+    if (!fs.existsSync(historyPath)) return { blocks: [], messages: [], todos: [] };
     try {
-        return JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+        const parsed = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+        if (!parsed.todos) parsed.todos = [];
+        return parsed;
     } catch {
-        return { blocks: [], messages: [] };
+        return { blocks: [], messages: [], todos: [] };
     }
 }
 
@@ -54,8 +54,18 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
         }
     });
 
+    app.post('/tool-response', (req, res) => {
+        const { toolCallId, payload } = req.body || {};
+        if (!toolCallId) return res.status(400).json({ error: 'Missing toolCallId' });
+        const ok = resolveToolResponse(String(toolCallId), payload || {});
+        if (ok) return res.json({ success: true });
+        return res.status(404).json({ error: 'Tool call not found or already resolved.' });
+    });
+
     app.get('/history/:sessionId', (req, res) => {
-        res.json(getHistory(req.params.sessionId));
+        const hist = getHistory(req.params.sessionId);
+        const mode = sessionModes.get(req.params.sessionId) || 'agent';
+        res.json({ ...hist, mode });
     });
 
     app.get('/sessions', (req, res) => {
@@ -143,14 +153,37 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
 
         const provider = ProviderFactory.create(model);
 
-        let { blocks, messages } = getHistory(sessionId);
+        let { blocks, messages, todos } = getHistory(sessionId);
 
         // Add latest user input
         messages.push(provider.createUserMessage(prompt));
         blocks.push({ type: 'user', id: crypto.randomUUID(), text: prompt });
-        saveMessage(sessionId, blocks, messages);
+        saveMessage(sessionId, blocks, messages, { todos });
 
         let sysInstruct = getSystemPrompt();
+
+        const mode = sessionModes.get(sessionId) || 'agent';
+        if (mode === 'plan') {
+            sysInstruct = `
+<planning_mode>
+You are in Planning Mode. Exercise judgement on whether a user's request warrants a plan before taking action.
+
+If you decide that a request warrants a plan, then follow this workflow:
+
+## Phase 1: Research
+- Thoroughly research the task using research tools.
+- DO NOT make any source code changes or run modifying commands during this phase.
+
+## Phase 2: Create Implementation Plan
+- Create an implementation plan based on your findings.
+
+## Phase 3: Execute
+- Once approved, execute the plan cleanly and incrementally.
+</planning_mode>
+\n${sysInstruct}`;
+        } else if (mode === 'debug') {
+            sysInstruct = `You are a debugging assistant. Focus on finding bugs, reasoning about the state, and adding logs.\n${sysInstruct}`;
+        }
         const parallaxMdPath = path.join(process.cwd(), 'PARALLAX.md');
         if (fs.existsSync(parallaxMdPath)) {
             sysInstruct += `\n\n# Project Architecture (PARALLAX.md)\n${fs.readFileSync(parallaxMdPath, 'utf8')}`;
@@ -168,6 +201,7 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
             provider,
             tools: combinedTools,
             systemInstruction: sysInstruct,
+            toolContextBase: { sessionId },
             onConfirm: async (tc) => {
                 if (yolo) return true;
                 return new Promise<boolean>((resolve) => {
@@ -209,13 +243,33 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
                 }
                 if (part.type === 'text-delta') {
                     closeThinkingBlock();
+
+                    // Convert Gemini provider's rate-limit warning text into a dedicated SSE event
+                    // so the desktop can show a proper UI instead of plain assistant text.
+                    const raw = String(part.text || '');
+                    const rateLimitMatch = raw.match(/\[Rate limit exceeded \(429\)\. Auto-retrying in (\d+)\s+seconds\.\.\.\s+\(Attempt\s+(\d+)\/(\d+)\)\]/i);
+                    if (rateLimitMatch) {
+                        const retryAfterSeconds = Number(rateLimitMatch[1] || 10);
+                        const attempt = Number(rateLimitMatch[2] || 1);
+                        const maxAttempts = Number(rateLimitMatch[3] || 5);
+                        sendEvent({
+                            type: 'rate-limit',
+                            provider: 'gemini',
+                            retryAfterSeconds,
+                            attempt,
+                            maxAttempts,
+                            message: raw.trim()
+                        });
+                        continue;
+                    }
+
                     if (assistantBlockIndex === -1) {
                         currentAssistantBlockId = crypto.randomUUID();
                         assistantBlockIndex = blocks.length;
                         blocks.push({ type: 'assistant', id: currentAssistantBlockId, text: '' });
                     }
 
-                    const textChunk = part.text || '';
+                    const textChunk = raw;
                     fullAssistantText += textChunk;
                     sendEvent({ type: 'text-delta', id: currentAssistantBlockId, text: textChunk });
                     blocks[assistantBlockIndex].text = fullAssistantText;
@@ -235,9 +289,13 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
                     const tcId = part.toolCallId || crypto.randomUUID();
                     console.log(`\n[Tool Call] -> ${part.toolName}`);
                     console.log(JSON.stringify(part.input, null, 2));
-                    const awaitConfirm = !yolo;
-                    sendEvent({ type: 'tool-call', name: part.toolName, input: part.input, id: tcId, awaitConfirm });
-                    blocks.push({ type: 'tool-call', id: tcId, awaitConfirm, call: { id: tcId, name: part.toolName || '', args: part.input, status: 'calling' } });
+                    const toolName = String(part.toolName || '');
+                    const requiresApproval = !!(combinedTools as any)?.[toolName]?.requiresConfirmation;
+                    const awaitConfirm = !yolo && requiresApproval;
+                    const awaitUserInput = toolName === 'AskQuestion';
+                    const uiHint = awaitUserInput ? 'askQuestion' : undefined;
+                    sendEvent({ type: 'tool-call', name: toolName, input: part.input, id: tcId, awaitConfirm, awaitUserInput, uiHint });
+                    blocks.push({ type: 'tool-call', id: tcId, awaitConfirm, awaitUserInput, uiHint, call: { id: tcId, name: toolName, args: part.input, status: 'calling' } });
                 } else if (part.type === 'tool-result') {
                     console.log(`\n[Tool Result] <- ${part.toolCallId}`);
                     let outStr = typeof part.output === 'string' ? part.output : JSON.stringify(part.output);
@@ -251,6 +309,9 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
                         const b = blocks[i];
                         if (b.type === 'tool-call' && b.call.id === part.toolCallId) {
                             blocks[i] = { type: 'tool-call', id: b.id, call: { ...b.call, status: 'done', result: part.output } };
+                            if (b.call.name === 'SwitchMode' && part.output?.success) {
+                                sendEvent({ type: 'mode-change', mode: part.output.mode });
+                            }
                             break;
                         }
                     }
@@ -262,7 +323,7 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
                     sendEvent({ type: 'finish-step' });
                 }
             }
-            saveMessage(sessionId, blocks, messages);
+            saveMessage(sessionId, blocks, messages, { todos });
             console.log(`\n--- FINISHED ---`);
             sendEvent({ type: 'done' });
             res.end();
