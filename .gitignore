@@ -9,3 +9,4 @@ dist
 better-auth_migrations
 
 .npmrc
+*.js
