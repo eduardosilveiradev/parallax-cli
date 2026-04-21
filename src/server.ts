@@ -78,11 +78,11 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
         const { sessionId, mode } = req.body;
         if (!sessionId || !mode) return res.status(400).json({ error: 'Missing sessionId or mode' });
         sessionModes.set(sessionId, mode);
-        
+
         // Persist immediately
         const hist = getHistory(sessionId);
         saveMessage(sessionId, hist.blocks, hist.messages, { ...hist, mode });
-        
+
         res.json({ success: true, mode });
     });
 
@@ -108,11 +108,6 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
                 return { id, mtime: stat.mtimeMs, messageCount: history.messages?.length || 0, lastMessage, cwd: history.cwd };
             });
             sessions.sort((a, b) => b.mtime - a.mtime);
-
-            // make sure the current CLI session is always returned even if it doesn't have a file yet
-            if (!sessions.find(s => s.id === cliSessionId)) {
-                sessions.unshift({ id: cliSessionId, mtime: Date.now(), messageCount: 0, lastMessage: 'Current UI Session', cwd: process.cwd() });
-            }
 
             res.json(sessions);
         } catch (e) {
@@ -188,7 +183,7 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
 
         const mcpTools = await loadMcpTools(effectiveCwd);
         const combinedTools = { ...allTools, ...mcpTools };
-        
+
         if (!sessionModes.has(sessionId)) {
             sessionModes.set(sessionId, histMode as any);
         }
