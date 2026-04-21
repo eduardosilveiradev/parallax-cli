@@ -17,20 +17,23 @@ import { getHistoryPath, sessionModes } from './session-state.js';
 
 export function saveMessage(sessionId: string, blocks: any[], messages: any[], extra: Record<string, any> = {}) {
     const historyPath = getHistoryPath(sessionId);
+    const mode = sessionModes.get(sessionId) || 'agent';
     fs.mkdirSync(path.dirname(historyPath), { recursive: true });
-    fs.writeFileSync(historyPath, JSON.stringify({ blocks, messages, ...extra }, null, 2));
+    fs.writeFileSync(historyPath, JSON.stringify({ blocks, messages, mode, ...extra }, null, 2));
 }
 
 export function getHistory(sessionId: string) {
     const historyPath = getHistoryPath(sessionId);
-    if (!fs.existsSync(historyPath)) return { blocks: [], messages: [], todos: [] };
-    try {
-        const parsed = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
-        if (!parsed.todos) parsed.todos = [];
-        return parsed;
-    } catch {
-        return { blocks: [], messages: [], todos: [] };
+    if (fs.existsSync(historyPath)) {
+        const hist = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
+        return {
+            blocks: hist.blocks || [],
+            messages: hist.messages || [],
+            todos: hist.todos || [],
+            mode: hist.mode || 'agent'
+        };
     }
+    return { blocks: [], messages: [], todos: [], mode: 'agent' };
 }
 
 export const activeConfirmations = new Map<string, (approved: boolean) => void>();
@@ -64,8 +67,21 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
 
     app.get('/history/:sessionId', (req, res) => {
         const hist = getHistory(req.params.sessionId);
-        const mode = sessionModes.get(req.params.sessionId) || 'agent';
+        const mode = hist.mode || sessionModes.get(req.params.sessionId) || 'agent';
+        sessionModes.set(req.params.sessionId, mode);
         res.json({ ...hist, mode });
+    });
+
+    app.post('/mode', (req, res) => {
+        const { sessionId, mode } = req.body;
+        if (!sessionId || !mode) return res.status(400).json({ error: 'Missing sessionId or mode' });
+        sessionModes.set(sessionId, mode);
+        
+        // Persist immediately
+        const hist = getHistory(sessionId);
+        saveMessage(sessionId, hist.blocks, hist.messages, { ...hist, mode });
+        
+        res.json({ success: true, mode });
     });
 
     app.get('/sessions', (req, res) => {
@@ -135,8 +151,12 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
     });
 
     app.post('/prompt', async (req, res) => {
-        const { prompt, sessionId = cliSessionId = '', yolo = false } = req.body;
+        const { prompt, sessionId = cliSessionId || '', yolo = false, mode: reqMode } = req.body;
         if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
+
+        if (reqMode && ['agent', 'plan', 'debug'].includes(reqMode)) {
+            sessionModes.set(sessionId, reqMode);
+        }
 
         console.log(`\n--- NEW PROMPT ---`);
         console.log(`[Session] ${sessionId}`);
@@ -148,22 +168,35 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
         res.setHeader('X-Accel-Buffering', 'no');
         res.flushHeaders();
 
+        const sendEvent = (data: any) => {
+            if (res.writableEnded) return;
+            try {
+                res.write(`data: ${JSON.stringify(data)}\n\n`);
+            } catch (err) {
+                console.error("Failed to write SSE event:", err);
+            }
+        };
+
         const mcpTools = await loadMcpTools();
         const combinedTools = { ...allTools, ...mcpTools };
 
-        const provider = ProviderFactory.create(model);
+        const targetModel = req.body.model || model;
+        const provider = ProviderFactory.create(targetModel);
 
-        let { blocks, messages, todos } = getHistory(sessionId);
+        let { blocks, messages, todos, mode: histMode } = getHistory(sessionId);
+        
+        if (!sessionModes.has(sessionId)) {
+            sessionModes.set(sessionId, histMode as any);
+        }
 
-        // Add latest user input
         messages.push(provider.createUserMessage(prompt));
         blocks.push({ type: 'user', id: crypto.randomUUID(), text: prompt });
         saveMessage(sessionId, blocks, messages, { todos });
 
+        const currentMode = sessionModes.get(sessionId) || 'agent';
         let sysInstruct = getSystemPrompt();
 
-        const mode = sessionModes.get(sessionId) || 'agent';
-        if (mode === 'plan') {
+        if (currentMode === 'plan') {
             sysInstruct = `
 <planning_mode>
 You are in Planning Mode. Exercise judgement on whether a user's request warrants a plan before taking action.
@@ -181,7 +214,7 @@ If you decide that a request warrants a plan, then follow this workflow:
 - Once approved, execute the plan cleanly and incrementally.
 </planning_mode>
 \n${sysInstruct}`;
-        } else if (mode === 'debug') {
+        } else if (currentMode === 'debug') {
             sysInstruct = `You are a debugging assistant. Focus on finding bugs, reasoning about the state, and adding logs.\n${sysInstruct}`;
         }
         const parallaxMdPath = path.join(process.cwd(), 'PARALLAX.md');
@@ -210,9 +243,6 @@ If you decide that a request warrants a plan, then follow this workflow:
             }
         });
 
-        const sendEvent = (data: any) => {
-            res.write(`data: ${JSON.stringify(data)}\n\n`);
-        };
 
         let fullAssistantText = '';
         let assistantBlockIndex = -1;
@@ -325,7 +355,7 @@ If you decide that a request warrants a plan, then follow this workflow:
             }
             saveMessage(sessionId, blocks, messages, { todos });
             console.log(`\n--- FINISHED ---`);
-            sendEvent({ type: 'done' });
+            sendEvent({ type: 'done', todos });
             res.end();
         } catch (e: any) {
             console.error('SSE Error:', e);
@@ -344,7 +374,9 @@ If you decide that a request warrants a plan, then follow this workflow:
 
 import { fileURLToPath } from 'url';
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-    const defaultSessionId = crypto.randomBytes(4).toString('hex');
-    startServer(defaultSessionId).catch(console.error);
-}
+const defaultSessionId = crypto.randomBytes(4).toString('hex');
+console.log(`[Startup] Initializing session ${defaultSessionId}...`);
+startServer(defaultSessionId).catch(err => {
+    console.error("[Fatal Startup Error]:", err);
+    process.exit(1);
+});
