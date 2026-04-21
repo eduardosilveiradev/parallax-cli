@@ -18,8 +18,9 @@ import { getHistoryPath, sessionModes } from './session-state.js';
 export function saveMessage(sessionId: string, blocks: any[], messages: any[], extra: Record<string, any> = {}) {
     const historyPath = getHistoryPath(sessionId);
     const mode = sessionModes.get(sessionId) || 'agent';
+    const cwd = extra.cwd || process.cwd();
     fs.mkdirSync(path.dirname(historyPath), { recursive: true });
-    fs.writeFileSync(historyPath, JSON.stringify({ blocks, messages, mode, ...extra }, null, 2));
+    fs.writeFileSync(historyPath, JSON.stringify({ blocks, messages, mode, cwd, ...extra }, null, 2));
 }
 
 export function getHistory(sessionId: string) {
@@ -30,10 +31,11 @@ export function getHistory(sessionId: string) {
             blocks: hist.blocks || [],
             messages: hist.messages || [],
             todos: hist.todos || [],
-            mode: hist.mode || 'agent'
+            mode: hist.mode || 'agent',
+            cwd: hist.cwd || process.cwd()
         };
     }
-    return { blocks: [], messages: [], todos: [], mode: 'agent' };
+    return { blocks: [], messages: [], todos: [], mode: 'agent', cwd: process.cwd() };
 }
 
 export const activeConfirmations = new Map<string, (approved: boolean) => void>();
@@ -103,13 +105,13 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
                         if (lastMessage.length > 100) lastMessage = lastMessage.substring(0, 100) + '...';
                     }
                 }
-                return { id, mtime: stat.mtimeMs, messageCount: history.messages?.length || 0, lastMessage };
+                return { id, mtime: stat.mtimeMs, messageCount: history.messages?.length || 0, lastMessage, cwd: history.cwd };
             });
             sessions.sort((a, b) => b.mtime - a.mtime);
 
             // make sure the current CLI session is always returned even if it doesn't have a file yet
             if (!sessions.find(s => s.id === cliSessionId)) {
-                sessions.unshift({ id: cliSessionId, mtime: Date.now(), messageCount: 0, lastMessage: 'Current UI Session' });
+                sessions.unshift({ id: cliSessionId, mtime: Date.now(), messageCount: 0, lastMessage: 'Current UI Session', cwd: process.cwd() });
             }
 
             res.json(sessions);
@@ -151,7 +153,7 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
     });
 
     app.post('/prompt', async (req, res) => {
-        const { prompt, sessionId = cliSessionId || '', yolo = false, mode: reqMode } = req.body;
+        const { prompt, sessionId = cliSessionId || '', yolo = false, mode: reqMode, cwd: reqCwd } = req.body;
         if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
 
         if (reqMode && ['agent', 'plan', 'debug'].includes(reqMode)) {
@@ -177,13 +179,15 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
             }
         };
 
-        const mcpTools = await loadMcpTools();
-        const combinedTools = { ...allTools, ...mcpTools };
 
         const targetModel = req.body.model || model;
         const provider = ProviderFactory.create(targetModel);
 
-        let { blocks, messages, todos, mode: histMode } = getHistory(sessionId);
+        let { blocks, messages, todos, mode: histMode, cwd: histCwd } = getHistory(sessionId);
+        const effectiveCwd = reqCwd || histCwd || process.cwd();
+
+        const mcpTools = await loadMcpTools(effectiveCwd);
+        const combinedTools = { ...allTools, ...mcpTools };
         
         if (!sessionModes.has(sessionId)) {
             sessionModes.set(sessionId, histMode as any);
@@ -191,7 +195,7 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
 
         messages.push(provider.createUserMessage(prompt));
         blocks.push({ type: 'user', id: crypto.randomUUID(), text: prompt });
-        saveMessage(sessionId, blocks, messages, { todos });
+        saveMessage(sessionId, blocks, messages, { todos, cwd: effectiveCwd });
 
         const currentMode = sessionModes.get(sessionId) || 'agent';
         let sysInstruct = getSystemPrompt();
@@ -217,12 +221,12 @@ If you decide that a request warrants a plan, then follow this workflow:
         } else if (currentMode === 'debug') {
             sysInstruct = `You are a debugging assistant. Focus on finding bugs, reasoning about the state, and adding logs.\n${sysInstruct}`;
         }
-        const parallaxMdPath = path.join(process.cwd(), 'PARALLAX.md');
+        const parallaxMdPath = path.join(effectiveCwd, 'PARALLAX.md');
         if (fs.existsSync(parallaxMdPath)) {
             sysInstruct += `\n\n# Project Architecture (PARALLAX.md)\n${fs.readFileSync(parallaxMdPath, 'utf8')}`;
         }
 
-        const wsSkills = loadWorkspaceSkills(process.cwd());
+        const wsSkills = loadWorkspaceSkills(effectiveCwd);
         if (wsSkills.length > 0) {
             sysInstruct += `\n\n# Available Skills\nYou have access to the following specialized skills.\n`;
             for (const skill of wsSkills) {
@@ -234,7 +238,7 @@ If you decide that a request warrants a plan, then follow this workflow:
             provider,
             tools: combinedTools,
             systemInstruction: sysInstruct,
-            toolContextBase: { sessionId },
+            toolContextBase: { sessionId, cwd: effectiveCwd },
             onConfirm: async (tc) => {
                 if (yolo) return true;
                 return new Promise<boolean>((resolve) => {
@@ -263,6 +267,14 @@ If you decide that a request warrants a plan, then follow this workflow:
         req.on('close', () => {
             isAborted = true;
         });
+
+        let lastSaveTime = Date.now();
+        const maybeSave = (force = false) => {
+            if (force || Date.now() - lastSaveTime > 2000) {
+                saveMessage(sessionId, blocks, messages, { todos, cwd: effectiveCwd });
+                lastSaveTime = Date.now();
+            }
+        };
 
         try {
             const stream = agent.stream(messages);
@@ -303,6 +315,7 @@ If you decide that a request warrants a plan, then follow this workflow:
                     fullAssistantText += textChunk;
                     sendEvent({ type: 'text-delta', id: currentAssistantBlockId, text: textChunk });
                     blocks[assistantBlockIndex].text = fullAssistantText;
+                    maybeSave();
                 } else if (part.type === 'thinking-delta') {
                     if (thinkingBlockIndex === -1) {
                         currentThinkingBlockId = crypto.randomUUID();
@@ -314,6 +327,7 @@ If you decide that a request warrants a plan, then follow this workflow:
                     const thinkChunk = part.text || '';
                     sendEvent({ type: 'thinking-delta', id: currentThinkingBlockId, text: thinkChunk });
                     blocks[thinkingBlockIndex].text += thinkChunk;
+                    maybeSave();
                 } else if (part.type === 'tool-call') {
                     closeThinkingBlock();
                     const tcId = part.toolCallId || crypto.randomUUID();
@@ -326,6 +340,7 @@ If you decide that a request warrants a plan, then follow this workflow:
                     const uiHint = awaitUserInput ? 'askQuestion' : undefined;
                     sendEvent({ type: 'tool-call', name: toolName, input: part.input, id: tcId, awaitConfirm, awaitUserInput, uiHint });
                     blocks.push({ type: 'tool-call', id: tcId, awaitConfirm, awaitUserInput, uiHint, call: { id: tcId, name: toolName, args: part.input, status: 'calling' } });
+                    maybeSave(true);
                 } else if (part.type === 'tool-result') {
                     console.log(`\n[Tool Result] <- ${part.toolCallId}`);
                     let outStr = typeof part.output === 'string' ? part.output : JSON.stringify(part.output);
@@ -337,23 +352,25 @@ If you decide that a request warrants a plan, then follow this workflow:
                     sendEvent({ type: 'tool-result', id: part.toolCallId, output: part.output });
                     for (let i = blocks.length - 1; i >= 0; i--) {
                         const b = blocks[i];
-                        if (b.type === 'tool-call' && b.call.id === part.toolCallId) {
-                            blocks[i] = { type: 'tool-call', id: b.id, call: { ...b.call, status: 'done', result: part.output } };
-                            if (b.call.name === 'SwitchMode' && (part.output as any)?.success) {
+                        if (b.type === 'tool-call' && (b as any).call.id === part.toolCallId) {
+                            blocks[i] = { type: 'tool-call', id: b.id, call: { ...(b as any).call, status: 'done', result: part.output } };
+                            if ((b as any).call.name === 'SwitchMode' && (part.output as any)?.success) {
                                 sendEvent({ type: 'mode-change', mode: (part.output as any).mode });
                             }
                             break;
                         }
                     }
+                    maybeSave(true);
                 } else if (part.type === 'finish-step') {
                     console.log(`\n[Finish Step]`);
                     closeThinkingBlock();
                     assistantBlockIndex = -1;
                     fullAssistantText = '';
                     sendEvent({ type: 'finish-step' });
+                    maybeSave(true);
                 }
             }
-            saveMessage(sessionId, blocks, messages, { todos });
+            saveMessage(sessionId, blocks, messages, { todos, cwd: effectiveCwd });
             console.log(`\n--- FINISHED ---`);
             sendEvent({ type: 'done', todos });
             res.end();

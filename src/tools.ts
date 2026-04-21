@@ -261,9 +261,10 @@ export const allTools: ToolSet = {
             },
             required: ['path', 'keyPath', 'operation']
         },
-        execute: async (args: any) => {
+        execute: async (args: any, context?: ToolContext) => {
             try {
-                const fullPath = path.resolve(args.path);
+                const effectiveCwd = context?.cwd || process.cwd();
+                const fullPath = path.resolve(effectiveCwd, args.path);
                 if (!fs.existsSync(fullPath)) return { success: false, error: `File not found at ${fullPath}` };
 
                 const content = fs.readFileSync(fullPath, 'utf8');
@@ -302,9 +303,10 @@ export const allTools: ToolSet = {
             },
             required: ['SearchPath', 'Query']
         },
-        execute: async (args: any) => {
+        execute: async (args: any, context?: ToolContext) => {
             try {
-                const fullPath = path.resolve(args.SearchPath);
+                const effectiveCwd = context?.cwd || process.cwd();
+                const fullPath = path.resolve(effectiveCwd, args.SearchPath);
                 const MAX_RESULTS = 250;
                 const matches = await threadedSearch(fullPath, args.Query, {
                     isRegex: !!args.IsRegex,
@@ -381,9 +383,10 @@ export const allTools: ToolSet = {
             properties: { DirectoryPath: { type: 'string', description: 'Path to list contents of, should be absolute path to a directory.' } },
             required: ['DirectoryPath']
         },
-        execute: async ({ DirectoryPath }: any) => {
+        execute: async ({ DirectoryPath }: any, context?: ToolContext) => {
             try {
-                const resolved = path.resolve(DirectoryPath);
+                const effectiveCwd = context?.cwd || process.cwd();
+                const resolved = path.resolve(effectiveCwd, DirectoryPath);
                 const entries = fs.readdirSync(resolved, { withFileTypes: true });
                 const results = [];
                 for (const entry of entries) {
@@ -415,9 +418,10 @@ export const allTools: ToolSet = {
             },
             required: ['AbsolutePath']
         },
-        execute: async ({ AbsolutePath, StartLine, EndLine }: any) => {
+        execute: async ({ AbsolutePath, StartLine, EndLine }: any, context?: ToolContext) => {
             try {
-                const resolved = path.resolve(AbsolutePath);
+                const effectiveCwd = context?.cwd || process.cwd();
+                const resolved = path.resolve(effectiveCwd, AbsolutePath);
                 const content = fs.readFileSync(resolved, 'utf8');
                 if (StartLine || EndLine) {
                     const lines = content.split('\n');
@@ -443,9 +447,10 @@ export const allTools: ToolSet = {
             },
             required: ['TargetFile', 'CodeContent']
         },
-        execute: async ({ TargetFile, CodeContent, Overwrite }: any) => {
+        execute: async ({ TargetFile, CodeContent, Overwrite }: any, context?: ToolContext) => {
             try {
-                const resolved = path.resolve(TargetFile);
+                const effectiveCwd = context?.cwd || process.cwd();
+                const resolved = path.resolve(effectiveCwd, TargetFile);
                 if (fs.existsSync(resolved) && !Overwrite) {
                     return { success: false, error: `File already exists at ${TargetFile}. Use Overwrite=true if you are sure.` };
                 }
@@ -484,9 +489,10 @@ export const allTools: ToolSet = {
             },
             required: ['TargetFile', 'ReplacementChunks']
         },
-        execute: async ({ TargetFile, ReplacementChunks }: any) => {
+        execute: async ({ TargetFile, ReplacementChunks }: any, context?: ToolContext) => {
             try {
-                const resolved = path.resolve(TargetFile);
+                const effectiveCwd = context?.cwd || process.cwd();
+                const resolved = path.resolve(effectiveCwd, TargetFile);
                 if (!fs.existsSync(resolved)) return { success: false, error: 'File does not exist: ' + resolved };
                 let content = fs.readFileSync(resolved, 'utf-8');
                 let replacedCount = 0;
@@ -525,9 +531,10 @@ export const allTools: ToolSet = {
             },
             required: ['TargetFile', 'TargetContent', 'ReplacementContent']
         },
-        execute: async ({ TargetFile, TargetContent, ReplacementContent, AllowMultiple }: any) => {
+        execute: async ({ TargetFile, TargetContent, ReplacementContent, AllowMultiple }: any, context?: ToolContext) => {
             try {
-                const resolved = path.resolve(TargetFile);
+                const effectiveCwd = context?.cwd || process.cwd();
+                const resolved = path.resolve(effectiveCwd, TargetFile);
                 if (!fs.existsSync(resolved)) return { success: false, error: 'File does not exist: ' + resolved };
                 let content = fs.readFileSync(resolved, 'utf-8');
                 const occurrences = content.split(TargetContent).length - 1;
@@ -569,10 +576,11 @@ export const allTools: ToolSet = {
             },
             required: ['CommandLine']
         },
-        execute: async ({ CommandLine, Cwd, WaitMsBeforeAsync }: any) => {
+        execute: async ({ CommandLine, Cwd, WaitMsBeforeAsync }: any, context?: ToolContext) => {
             try {
                 const id = crypto.randomUUID();
-                const child = spawn(CommandLine, { shell: true, cwd: Cwd ? path.resolve(Cwd) : process.cwd() });
+                const effectiveCwd = Cwd ? path.resolve(context?.cwd || process.cwd(), Cwd) : (context?.cwd || process.cwd());
+                const child = spawn(CommandLine, { shell: true, cwd: effectiveCwd });
 
                 const cmdState: RunningCommand = {
                     id,

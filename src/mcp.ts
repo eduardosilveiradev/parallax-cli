@@ -30,15 +30,29 @@ const DEFAULT_CONFIG: McpConfig = {
   }
 };
 
-export async function loadMcpTools(): Promise<ToolSet> {
-  let config: McpConfig = DEFAULT_CONFIG;
+export async function loadMcpTools(cwd?: string): Promise<ToolSet> {
+  const effectiveCwd = cwd || process.cwd();
+  const dynamicDefaultConfig: McpConfig = {
+    mcpServers: {
+      git: {
+        command: "uvx",
+        args: ["mcp-server-git", "--repository", effectiveCwd],
+      },
+      fetch: {
+        command: "uvx",
+        args: ["mcp-server-fetch"],
+      }
+    }
+  };
+
+  let config: McpConfig = dynamicDefaultConfig;
 
   if (fs.existsSync(CONFIG_PATH)) {
     try {
       const userConfig: McpConfig = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
       config = {
         mcpServers: {
-          ...DEFAULT_CONFIG.mcpServers,
+          ...dynamicDefaultConfig.mcpServers,
           ...(userConfig.mcpServers || {}),
         },
       };

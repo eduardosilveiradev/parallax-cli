@@ -32,6 +32,7 @@ export interface ToolContext {
     onConfirm?: (tool: { id: string; name: string; input: any }) => Promise<boolean>;
     toolCallId?: string;
     sessionId?: string;
+    cwd?: string;
 }
 
 export interface ToolDefinition {
