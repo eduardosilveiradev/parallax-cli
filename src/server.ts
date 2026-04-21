@@ -339,8 +339,8 @@ If you decide that a request warrants a plan, then follow this workflow:
                         const b = blocks[i];
                         if (b.type === 'tool-call' && b.call.id === part.toolCallId) {
                             blocks[i] = { type: 'tool-call', id: b.id, call: { ...b.call, status: 'done', result: part.output } };
-                            if (b.call.name === 'SwitchMode' && part.output?.success) {
-                                sendEvent({ type: 'mode-change', mode: part.output.mode });
+                            if (b.call.name === 'SwitchMode' && (part.output as any)?.success) {
+                                sendEvent({ type: 'mode-change', mode: (part.output as any).mode });
                             }
                             break;
                         }
