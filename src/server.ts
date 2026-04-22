@@ -103,8 +103,13 @@ async function maybeGenerateAndPersistThreadName(sessionId: string, blocks: any[
         const timeoutPromise = new Promise<null>((resolve) => {
             timeoutId = setTimeout(() => resolve(null), THREAD_NAME_TIMEOUT_MS);
         });
+
+        const firstUser = blocks.find(b => b.type === 'user')?.text || "";
+        const firstAssistant = blocks.find(b => b.type === 'assistant')?.text || "";
+        if (!firstUser || !firstAssistant) return;
+
         const title = await Promise.race<string | null>([
-            generateThreadName(firstTurn.firstUser, firstTurn.firstAssistant),
+            generateThreadName(firstUser, firstAssistant),
             timeoutPromise
         ]);
         if (timeoutId) clearTimeout(timeoutId);
