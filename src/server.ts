@@ -32,13 +32,85 @@ export function getHistory(sessionId: string) {
             messages: hist.messages || [],
             todos: hist.todos || [],
             mode: hist.mode || 'agent',
-            cwd: hist.cwd || process.cwd()
+            cwd: hist.cwd || process.cwd(),
+            threadName: hist.threadName
         };
     }
-    return { blocks: [], messages: [], todos: [], mode: 'agent', cwd: process.cwd() };
+    return { blocks: [], messages: [], todos: [], mode: 'agent', cwd: process.cwd(), threadName: undefined };
 }
 
 export const activeConfirmations = new Map<string, (approved: boolean) => void>();
+const activeThreadNameGenerations = new Set<string>();
+const THREAD_NAME_MODEL = 'ollama:qwen3.5:9b';
+const THREAD_NAME_MAX_LENGTH = 80;
+const THREAD_NAME_TIMEOUT_MS = 30000;
+
+function getFirstUserAndAssistantTexts(blocks: any[]) {
+    const firstUser = blocks.find((b: any) => b?.type === 'user' && typeof b?.text === 'string' && b.text.trim().length > 0)?.text?.trim();
+    const firstAssistant = blocks.find((b: any) => b?.type === 'assistant' && typeof b?.text === 'string' && b.text.trim().length > 0)?.text?.trim();
+    if (!firstUser || !firstAssistant) return null;
+    return { firstUser, firstAssistant };
+}
+
+async function generateThreadName(firstUser: string, firstAssistant: string) {
+    const provider = ProviderFactory.create(THREAD_NAME_MODEL);
+    const prompt = [
+        'Generate a concise conversation thread title from these two messages.',
+        'Return ONLY the title text.',
+        'Rules: 3-8 words, no quotes, no markdown, no trailing punctuation.',
+        '',
+        `First user message: ${firstUser}`,
+        '',
+        `First assistant message: ${firstAssistant}`
+    ].join('\n');
+    const messages = [provider.createUserMessage(prompt)];
+    const stream = provider.stream({ messages });
+
+    let out = '';
+    for await (const part of stream) {
+        if (part.type === 'text-delta') {
+            out += part.text || '';
+        }
+    }
+
+    const cleaned = out
+        .split('\n')[0]
+        .replace(/^["'`]+|["'`]+$/g, '')
+        .replace(/[.?!,:;]+$/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, THREAD_NAME_MAX_LENGTH);
+    return cleaned || null;
+}
+
+async function maybeGenerateAndPersistThreadName(sessionId: string, blocks: any[], messages: any[], todos: any[], cwd: string) {
+    if (activeThreadNameGenerations.has(sessionId)) return;
+    activeThreadNameGenerations.add(sessionId);
+    try {
+        const latest = getHistory(sessionId);
+        if (latest.threadName) return;
+
+        const firstTurn = getFirstUserAndAssistantTexts(blocks);
+        if (!firstTurn) return;
+
+        let timeoutId: ReturnType<typeof setTimeout> | null = null;
+        const timeoutPromise = new Promise<null>((resolve) => {
+            timeoutId = setTimeout(() => resolve(null), THREAD_NAME_TIMEOUT_MS);
+        });
+        const title = await Promise.race<string | null>([
+            generateThreadName(firstTurn.firstUser, firstTurn.firstAssistant),
+            timeoutPromise
+        ]);
+        if (timeoutId) clearTimeout(timeoutId);
+        if (!title) return;
+
+        saveMessage(sessionId, blocks, messages, { todos, cwd, threadName: title });
+    } catch (err) {
+        console.error('Thread name generation failed:', err);
+    } finally {
+        activeThreadNameGenerations.delete(sessionId);
+    }
+}
 
 export const startServer = async (cliSessionId: string, model: string = 'gemini:gemini-3-flash-preview') => {
     const app = express();
@@ -97,6 +169,7 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
                 const id = f.replace('.json', '');
                 const stat = fs.statSync(path.join(dir, f));
                 const history = getHistory(id);
+                const threadName = history.threadName;
                 let lastMessage = 'Empty session';
                 if (history.blocks && history.blocks.length > 0) {
                     const textBlocks = history.blocks.filter((b: any) => b.type === 'user' || (b.type === 'assistant' && b.text));
@@ -105,7 +178,15 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
                         if (lastMessage.length > 100) lastMessage = lastMessage.substring(0, 100) + '...';
                     }
                 }
-                return { id, mtime: stat.mtimeMs, messageCount: history.messages?.length || 0, lastMessage, cwd: history.cwd };
+                return {
+                    id,
+                    mtime: stat.mtimeMs,
+                    messageCount: history.messages?.length || 0,
+                    lastMessage,
+                    displayName: threadName || lastMessage,
+                    threadName: threadName || null,
+                    cwd: history.cwd
+                };
             });
             sessions.sort((a, b) => b.mtime - a.mtime);
 
@@ -368,6 +449,7 @@ If you decide that a request warrants a plan, then follow this workflow:
             saveMessage(sessionId, blocks, messages, { todos, cwd: effectiveCwd });
             console.log(`\n--- FINISHED ---`);
             sendEvent({ type: 'done', todos });
+            void maybeGenerateAndPersistThreadName(sessionId, blocks, messages, todos, effectiveCwd);
             res.end();
         } catch (e: any) {
             console.error('SSE Error:', e);
