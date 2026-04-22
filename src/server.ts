@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { execSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { ToolLoopAgent } from './agent/agent.js';
 import { ProviderFactory } from './agent/provider-factory.js';
@@ -98,12 +99,6 @@ async function maybeGenerateAndPersistThreadName(sessionId: string, blocks: any[
         const latest = getHistory(sessionId);
         if (latest.threadName) return;
 
-        const firstTurn = getFirstUserAndAssistantTexts(blocks);
-        if (!firstTurn) {
-            console.log(`[Title Gen] Skipping: First turn not complete yet.`);
-            return;
-        }
-
         let timeoutId: ReturnType<typeof setTimeout> | null = null;
         const timeoutPromise = new Promise<null>((resolve) => {
             timeoutId = setTimeout(() => resolve(null), THREAD_NAME_TIMEOUT_MS);
@@ -127,7 +122,70 @@ async function maybeGenerateAndPersistThreadName(sessionId: string, blocks: any[
     }
 }
 
+function killPortProcess(port: string | number) {
+    try {
+        if (process.platform === 'win32') {
+            console.log(`[Startup] Checking port ${port}. My PID: ${process.pid}`);
+            let output = '';
+            try {
+                output = execSync(`netstat -ano | findstr :${port}`).toString();
+            } catch (e) {
+                // This usually means findstr didn't find anything
+                return;
+            }
+
+            const lines = output.split('\n');
+            const pids = new Set<string>();
+
+            for (const line of lines) {
+                if (line.includes('LISTENING') && line.includes(`:${port}`)) {
+                    const parts = line.trim().split(/\s+/);
+                    const pid = parts[parts.length - 1];
+                    if (pid && pid !== '0' && pid !== process.pid.toString()) {
+                        pids.add(pid);
+                    }
+                }
+            }
+            
+            if (pids.size === 0) {
+                console.log(`[Startup] No stale processes found on port ${port}`);
+            }
+
+            for (const pid of pids) {
+                console.log(`[Startup] Attempting to kill process tree for PID ${pid} on port ${port}...`);
+                try {
+                    // /T kills child processes as well, /F is force
+                    execSync(`taskkill /F /T /PID ${pid}`);
+                    console.log(`[Startup] Successfully signaled termination for ${pid}`);
+                } catch (e) {
+                    const msg = e instanceof Error ? e.message : String(e);
+                    if (msg.includes('not found')) {
+                        console.log(`[Startup] Process ${pid} already terminated.`);
+                    } else {
+                        console.error(`[Startup] Failed to kill process ${pid}:`, msg);
+                    }
+                }
+            }
+        } else {
+            try {
+                const pids = execSync(`lsof -t -i:${port}`).toString().trim().split('\n').filter(p => p.length > 0 && p !== process.pid.toString());
+                for (const pid of pids) {
+                    console.log(`[Startup] Killing stale daemon process ${pid} on port ${port}`);
+                    execSync(`kill -9 ${pid}`);
+                }
+            } catch (e) {
+                // Ignore if no process found
+            }
+        }
+    } catch (e) {
+        console.error('[Startup] Error in killPortProcess:', e);
+    }
+}
+
 export const startServer = async (cliSessionId: string, model: string = 'gemini:gemini-3-flash-preview') => {
+    const PORT = process.env.PORT || 3555;
+    killPortProcess(PORT);
+    
     const app = express();
     app.use(cors());
     app.use(express.json());
@@ -209,6 +267,16 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
         } catch (e) {
             res.status(500).json({ error: 'Failed to list sessions' });
         }
+    });
+
+    app.post('/sessions/:sessionId/todos', (req, res) => {
+        const { sessionId } = req.params;
+        const { todos } = req.body;
+        if (!sessionId || !todos) return res.status(400).json({ error: 'Missing sessionId or todos' });
+        
+        const hist = getHistory(sessionId);
+        saveMessage(sessionId, hist.blocks, hist.messages, { ...hist, todos });
+        res.json({ success: true, todos });
     });
 
     app.delete('/sessions/:id', (req, res) => {
@@ -473,7 +541,6 @@ If you decide that a request warrants a plan, then follow this workflow:
         }
     });
 
-    const PORT = process.env.PORT || 3555;
     app.listen(PORT, () => {
         if (process.argv[1] === fileURLToPath(import.meta.url)) {
             console.log(`Parallax headless daemon active on port ${PORT} (Session: ${cliSessionId})`);
