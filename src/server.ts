@@ -41,7 +41,7 @@ export function getHistory(sessionId: string) {
 
 export const activeConfirmations = new Map<string, (approved: boolean) => void>();
 const activeThreadNameGenerations = new Set<string>();
-const THREAD_NAME_MODEL = 'ollama:qwen3.5:9b';
+const THREAD_NAME_MODEL = 'ollama:qwen3:8b';
 const THREAD_NAME_MAX_LENGTH = 80;
 const THREAD_NAME_TIMEOUT_MS = 30000;
 
@@ -53,6 +53,7 @@ function getFirstUserAndAssistantTexts(blocks: any[]) {
 }
 
 async function generateThreadName(firstUser: string, firstAssistant: string) {
+    console.log(`[Title Gen] Generating title for user message: "${firstUser.substring(0, 50)}..."`);
     const provider = ProviderFactory.create(THREAD_NAME_MODEL);
     const prompt = [
         'Generate a concise conversation thread title from these two messages.',
@@ -67,10 +68,15 @@ async function generateThreadName(firstUser: string, firstAssistant: string) {
     const stream = provider.stream({ messages });
 
     let out = '';
-    for await (const part of stream) {
-        if (part.type === 'text-delta') {
-            out += part.text || '';
+    try {
+        for await (const part of stream) {
+            if (part.type === 'text-delta') {
+                out += part.text || '';
+            }
         }
+    } catch (e) {
+        console.error('[Title Gen] Stream error:', e);
+        return null;
     }
 
     const cleaned = out
@@ -80,6 +86,8 @@ async function generateThreadName(firstUser: string, firstAssistant: string) {
         .replace(/\s+/g, ' ')
         .trim()
         .slice(0, THREAD_NAME_MAX_LENGTH);
+    
+    console.log(`[Title Gen] Result: "${cleaned}"`);
     return cleaned || null;
 }
 
@@ -91,7 +99,10 @@ async function maybeGenerateAndPersistThreadName(sessionId: string, blocks: any[
         if (latest.threadName) return;
 
         const firstTurn = getFirstUserAndAssistantTexts(blocks);
-        if (!firstTurn) return;
+        if (!firstTurn) {
+            console.log(`[Title Gen] Skipping: First turn not complete yet.`);
+            return;
+        }
 
         let timeoutId: ReturnType<typeof setTimeout> | null = null;
         const timeoutPromise = new Promise<null>((resolve) => {
@@ -102,9 +113,13 @@ async function maybeGenerateAndPersistThreadName(sessionId: string, blocks: any[
             timeoutPromise
         ]);
         if (timeoutId) clearTimeout(timeoutId);
-        if (!title) return;
+        if (!title) {
+            console.log(`[Title Gen] Failed or timed out.`);
+            return;
+        }
 
         saveMessage(sessionId, blocks, messages, { todos, cwd, threadName: title });
+        console.log(`[Title Gen] Persisted title: "${title}" for session ${sessionId}`);
     } catch (err) {
         console.error('Thread name generation failed:', err);
     } finally {
