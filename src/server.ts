@@ -41,6 +41,9 @@ export function getHistory(sessionId: string) {
 
 export const activeConfirmations = new Map<string, (approved: boolean) => void>();
 const activeThreadNameGenerations = new Set<string>();
+const THREAD_NAME_MODEL = 'ollama:qwen3.5:9b';
+const THREAD_NAME_MAX_LENGTH = 80;
+const THREAD_NAME_TIMEOUT_MS = 30000;
 
 function getFirstUserAndAssistantTexts(blocks: any[]) {
     const firstUser = blocks.find((b: any) => b?.type === 'user' && typeof b?.text === 'string' && b.text.trim().length > 0)?.text?.trim();
@@ -50,7 +53,7 @@ function getFirstUserAndAssistantTexts(blocks: any[]) {
 }
 
 async function generateThreadName(firstUser: string, firstAssistant: string) {
-    const provider = ProviderFactory.create('ollama:qwen3.5:9b');
+    const provider = ProviderFactory.create(THREAD_NAME_MODEL);
     const prompt = [
         'Generate a concise conversation thread title from these two messages.',
         'Return ONLY the title text.',
@@ -76,7 +79,7 @@ async function generateThreadName(firstUser: string, firstAssistant: string) {
         .replace(/[.?!,:;]+$/g, '')
         .replace(/\s+/g, ' ')
         .trim()
-        .slice(0, 80);
+        .slice(0, THREAD_NAME_MAX_LENGTH);
     return cleaned || null;
 }
 
@@ -92,7 +95,7 @@ async function maybeGenerateAndPersistThreadName(sessionId: string, blocks: any[
 
         const title = await Promise.race<string | null>([
             generateThreadName(firstTurn.firstUser, firstTurn.firstAssistant),
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), 30000))
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), THREAD_NAME_TIMEOUT_MS))
         ]);
         if (!title) return;
 
@@ -174,7 +177,8 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
                     id,
                     mtime: stat.mtimeMs,
                     messageCount: history.messages?.length || 0,
-                    lastMessage: threadName || lastMessage,
+                    lastMessage,
+                    displayName: threadName || lastMessage,
                     threadName: threadName || null,
                     cwd: history.cwd
                 };
