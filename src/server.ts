@@ -18,10 +18,20 @@ import { getHistoryPath, sessionModes } from './session-state.js';
 
 export function saveMessage(sessionId: string, blocks: any[], messages: any[], extra: Record<string, any> = {}) {
     const historyPath = getHistoryPath(sessionId);
-    const mode = sessionModes.get(sessionId) || 'agent';
-    const cwd = extra.cwd || process.cwd();
+    const existing = getHistory(sessionId);
+    
+    // Merge existing data to preserve threadName and other fields
+    const data = {
+        ...existing,
+        blocks,
+        messages,
+        mode: extra.mode || sessionModes.get(sessionId) || existing.mode || 'agent',
+        cwd: extra.cwd || existing.cwd || process.cwd(),
+        ...extra
+    };
+    
     fs.mkdirSync(path.dirname(historyPath), { recursive: true });
-    fs.writeFileSync(historyPath, JSON.stringify({ blocks, messages, mode, cwd, ...extra }, null, 2));
+    fs.writeFileSync(historyPath, JSON.stringify(data, null, 2));
 }
 
 export function getHistory(sessionId: string) {
@@ -98,6 +108,10 @@ async function maybeGenerateAndPersistThreadName(sessionId: string, blocks: any[
     try {
         const latest = getHistory(sessionId);
         if (latest.threadName) return;
+
+        // Only generate title on the first prompt
+        const userMessages = blocks.filter(b => b.type === 'user');
+        if (userMessages.length !== 1) return;
 
         let timeoutId: ReturnType<typeof setTimeout> | null = null;
         const timeoutPromise = new Promise<null>((resolve) => {
@@ -402,7 +416,7 @@ If you decide that a request warrants a plan, then follow this workflow:
             provider,
             tools: combinedTools,
             systemInstruction: sysInstruct,
-            toolContextBase: { sessionId, cwd: effectiveCwd },
+            toolContextBase: { sessionId, cwd: effectiveCwd, todos },
             onConfirm: async (tc) => {
                 if (yolo) return true;
                 return new Promise<boolean>((resolve) => {
@@ -518,8 +532,21 @@ If you decide that a request warrants a plan, then follow this workflow:
                         const b = blocks[i];
                         if (b.type === 'tool-call' && (b as any).call.id === part.toolCallId) {
                             blocks[i] = { type: 'tool-call', id: b.id, call: { ...(b as any).call, status: 'done', result: part.output } };
-                            if ((b as any).call.name === 'SwitchMode' && (part.output as any)?.success) {
-                                sendEvent({ type: 'mode-change', mode: (part.output as any).mode });
+                            
+                            const toolName = (b as any).call.name;
+                            const result = part.output as any;
+                            if (toolName === 'SwitchMode' && result?.success) {
+                                sendEvent({ type: 'mode-change', mode: result.mode });
+                            }
+                            if (toolName === 'TodoWrite' && result?.success && result.todos) {
+                                todos = result.todos;
+                                (agent as any).toolContextBase.todos = todos;
+                            }
+                            if (toolName === 'CreatePlan' && result?.success && result.todos) {
+                                if (todos.length === 0) {
+                                    todos = result.todos.map((t: any) => ({ ...t, status: 'pending' }));
+                                    (agent as any).toolContextBase.todos = todos;
+                                }
                             }
                             break;
                         }

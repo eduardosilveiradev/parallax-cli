@@ -33,6 +33,7 @@ export interface ToolContext {
     toolCallId?: string;
     sessionId?: string;
     cwd?: string;
+    todos?: any[];
 }
 
 export interface ToolDefinition {

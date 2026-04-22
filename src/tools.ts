@@ -126,7 +126,7 @@ export const allTools: ToolSet = {
 
                 const filePath = path.join(brainDir, `${artifactId}.md`);
                 fs.writeFileSync(filePath, markdown, 'utf8');
-                return { success: true, artifactId, path: filePath, markdown };
+                return { success: true, artifactId, path: filePath, markdown, todos: args.todos };
             } catch (err: any) {
                 return { success: false, error: err.message };
             }
@@ -156,24 +156,10 @@ export const allTools: ToolSet = {
         },
         execute: async (args: any, context?: ToolContext) => {
             try {
-                const sessionId = context?.sessionId;
-                if (!sessionId) return { success: false, error: 'TodoWrite requires sessionId in ToolContext' };
-                const historyPath = getHistoryPath(sessionId);
-
-                let blocks: any[] = [];
-                let messages: any[] = [];
-                let existingTodos: any[] = [];
-                if (fs.existsSync(historyPath)) {
-                    try {
-                        const parsed = JSON.parse(fs.readFileSync(historyPath, 'utf8'));
-                        blocks = parsed.blocks || [];
-                        messages = parsed.messages || [];
-                        existingTodos = Array.isArray(parsed.todos) ? parsed.todos : [];
-                    } catch { }
-                }
-
+                const existingTodos = Array.isArray(context?.todos) ? context.todos : [];
                 const incoming = Array.isArray(args.todos) ? args.todos : [];
                 let nextTodos: any[] = [];
+
                 if (args.merge) {
                     const byId = new Map<string, any>();
                     for (const t of existingTodos) {
@@ -191,11 +177,13 @@ export const allTools: ToolSet = {
                     }
                     nextTodos = Array.from(byId.values());
                 } else {
-                    nextTodos = incoming.map((t: any) => ({ id: String(t.id), content: String(t.content), status: String(t.status) }));
+                    nextTodos = incoming.map((t: any) => ({ 
+                        id: String(t.id), 
+                        content: String(t.content), 
+                        status: t.status || 'pending' 
+                    }));
                 }
 
-                fs.mkdirSync(path.dirname(historyPath), { recursive: true });
-                fs.writeFileSync(historyPath, JSON.stringify({ blocks, messages, todos: nextTodos }, null, 2));
                 return { success: true, todos: nextTodos };
             } catch (err: any) {
                 return { success: false, error: err.message };

@@ -16,7 +16,7 @@ export class ToolLoopAgent {
     private tools?: ToolSet;
     private onConfirm?: (tool: { id: string; name: string; input: any }) => Promise<boolean>;
     private contextManager: ContextManager;
-    private toolContextBase?: Partial<ToolContext>;
+    public toolContextBase?: Partial<ToolContext>;
 
     constructor(settings: ToolLoopAgentSettings) {
         this.provider = settings.provider;
