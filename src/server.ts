@@ -330,7 +330,7 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
     });
 
     app.post('/prompt', async (req, res) => {
-        const { prompt, sessionId = cliSessionId || '', yolo = false, mode: reqMode, cwd: reqCwd } = req.body;
+        const { prompt, sessionId = cliSessionId || '', yolo = false, mode: reqMode, cwd: reqCwd, username } = req.body;
         if (!prompt) return res.status(400).json({ error: 'Missing prompt' });
 
         if (reqMode && ['agent', 'plan', 'debug'].includes(reqMode)) {
@@ -376,6 +376,10 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
 
         const currentMode = sessionModes.get(sessionId) || 'agent';
         let sysInstruct = getSystemPrompt();
+        
+        if (username) {
+            sysInstruct = `The user's name is ${username}. Please address them by their name when appropriate.\n\n${sysInstruct}`;
+        }
 
         if (currentMode === 'plan') {
             sysInstruct = `
