@@ -117,13 +117,74 @@ export class GenericProvider implements AgentProvider {
     const finalParts: any[] = [];
     let textContent = '';
 
+    // For manual <think> tag parsing if it's sent in content instead of reasoning_content
+    let isThinking = false;
+    let contentBuffer = '';
+
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta;
       if (!delta) continue;
 
+      const reasoningContent = (delta as any).reasoning_content || (delta as any).reasoning;
+      if (reasoningContent) {
+        yield { type: 'thinking-delta', text: reasoningContent };
+      }
+
       if (delta.content) {
-        textContent += delta.content;
-        yield { type: 'text-delta', text: delta.content };
+        contentBuffer += delta.content;
+
+        while (contentBuffer.length > 0) {
+            if (!isThinking) {
+                const startIdx = contentBuffer.indexOf('<think>');
+                if (startIdx !== -1) {
+                    const before = contentBuffer.substring(0, startIdx);
+                    if (before) {
+                        textContent += before;
+                        yield { type: 'text-delta', text: before };
+                    }
+                    isThinking = true;
+                    contentBuffer = contentBuffer.substring(startIdx + 7);
+                } else {
+                    const possibleStartIdx = contentBuffer.lastIndexOf('<');
+                    if (possibleStartIdx !== -1 && '<think>'.startsWith(contentBuffer.substring(possibleStartIdx))) {
+                        const before = contentBuffer.substring(0, possibleStartIdx);
+                        if (before) {
+                            textContent += before;
+                            yield { type: 'text-delta', text: before };
+                        }
+                        contentBuffer = contentBuffer.substring(possibleStartIdx);
+                        break;
+                    } else {
+                        textContent += contentBuffer;
+                        yield { type: 'text-delta', text: contentBuffer };
+                        contentBuffer = '';
+                    }
+                }
+            } else {
+                const endIdx = contentBuffer.indexOf('</think>');
+                if (endIdx !== -1) {
+                    const before = contentBuffer.substring(0, endIdx);
+                    if (before) {
+                        yield { type: 'thinking-delta', text: before };
+                    }
+                    isThinking = false;
+                    contentBuffer = contentBuffer.substring(endIdx + 8);
+                } else {
+                    const possibleEndIdx = contentBuffer.lastIndexOf('<');
+                    if (possibleEndIdx !== -1 && '</think>'.startsWith(contentBuffer.substring(possibleEndIdx))) {
+                        const before = contentBuffer.substring(0, possibleEndIdx);
+                        if (before) {
+                            yield { type: 'thinking-delta', text: before };
+                        }
+                        contentBuffer = contentBuffer.substring(possibleEndIdx);
+                        break;
+                    } else {
+                        yield { type: 'thinking-delta', text: contentBuffer };
+                        contentBuffer = '';
+                    }
+                }
+            }
+        }
       }
 
       if (delta.tool_calls) {
@@ -173,6 +234,16 @@ export class GenericProvider implements AgentProvider {
       }
     }
     
+    // Flush any remaining buffer
+    if (contentBuffer.length > 0) {
+        if (isThinking) {
+            yield { type: 'thinking-delta', text: contentBuffer };
+        } else {
+            textContent += contentBuffer;
+            yield { type: 'text-delta', text: contentBuffer };
+        }
+    }
+
     // Fallback if stream closes without explicit finish_reason
     if (textContent.length > 0 && finalParts.length === 0) {
       finalParts.push({ text: textContent });

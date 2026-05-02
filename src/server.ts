@@ -52,7 +52,6 @@ export function getHistory(sessionId: string) {
 
 export const activeConfirmations = new Map<string, (approved: boolean) => void>();
 const activeThreadNameGenerations = new Set<string>();
-const THREAD_NAME_MODEL = 'ollama:qwen3:8b';
 const THREAD_NAME_MAX_LENGTH = 80;
 const THREAD_NAME_TIMEOUT_MS = 30000;
 
@@ -63,9 +62,9 @@ function getFirstUserAndAssistantTexts(blocks: any[]) {
     return { firstUser, firstAssistant };
 }
 
-async function generateThreadName(firstUser: string, firstAssistant: string) {
+async function generateThreadName(firstUser: string, firstAssistant: string, targetModel: string) {
     console.log(`[Title Gen] Generating title for user message: "${firstUser.substring(0, 50)}..."`);
-    const provider = ProviderFactory.create(THREAD_NAME_MODEL);
+    const provider = ProviderFactory.create(targetModel);
     const prompt = [
         'Generate a concise conversation thread title from these two messages.',
         'Return ONLY the title text.',
@@ -102,7 +101,7 @@ async function generateThreadName(firstUser: string, firstAssistant: string) {
     return cleaned || null;
 }
 
-async function maybeGenerateAndPersistThreadName(sessionId: string, blocks: any[], messages: any[], todos: any[], cwd: string) {
+async function maybeGenerateAndPersistThreadName(sessionId: string, blocks: any[], messages: any[], todos: any[], cwd: string, targetModel: string) {
     if (activeThreadNameGenerations.has(sessionId)) return;
     activeThreadNameGenerations.add(sessionId);
     try {
@@ -123,7 +122,7 @@ async function maybeGenerateAndPersistThreadName(sessionId: string, blocks: any[
         if (!firstUser || !firstAssistant) return;
 
         const title = await Promise.race<string | null>([
-            generateThreadName(firstUser, firstAssistant),
+            generateThreadName(firstUser, firstAssistant, targetModel),
             timeoutPromise
         ]);
         if (timeoutId) clearTimeout(timeoutId);
@@ -564,7 +563,7 @@ If you decide that a request warrants a plan, then follow this workflow:
             saveMessage(sessionId, blocks, messages, { todos, cwd: effectiveCwd });
             console.log(`\n--- FINISHED ---`);
             sendEvent({ type: 'done', todos });
-            void maybeGenerateAndPersistThreadName(sessionId, blocks, messages, todos, effectiveCwd);
+            void maybeGenerateAndPersistThreadName(sessionId, blocks, messages, todos, effectiveCwd, targetModel);
             res.end();
         } catch (e: any) {
             console.error('SSE Error:', e);
