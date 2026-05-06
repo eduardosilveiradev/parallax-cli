@@ -445,8 +445,10 @@ If you decide that a request warrants a plan, then follow this workflow:
         };
 
         let isAborted = false;
+        const abortController = new AbortController();
         req.on('close', () => {
             isAborted = true;
+            abortController.abort();
         });
 
         let lastSaveTime = Date.now();
@@ -458,7 +460,7 @@ If you decide that a request warrants a plan, then follow this workflow:
         };
 
         try {
-            const stream = agent.stream(messages);
+            const stream = agent.stream(messages, abortController.signal);
             for await (const part of stream) {
                 if (isAborted) {
                     console.log(`\n[Client Disconnected] Aborting stream early.`);

@@ -48,7 +48,7 @@ export type ToolSet = Record<string, ToolDefinition>;
 export interface AgentProvider {
     name: string;
     setModel(model: string): void;
-    stream(args: { systemInstruction?: string; messages: any[]; tools?: ToolSet }): AsyncGenerator<StreamPart, void, unknown>;
+    stream(args: { systemInstruction?: string; messages: any[]; tools?: ToolSet; abortSignal?: AbortSignal }): AsyncGenerator<StreamPart, void, unknown>;
     createUserMessage(content: string): any;
     createToolResultMessage(id: string, name: string, output: unknown): any;
 }

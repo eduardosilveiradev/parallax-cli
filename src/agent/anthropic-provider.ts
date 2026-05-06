@@ -83,7 +83,7 @@ export class AnthropicProvider implements AgentProvider {
     return out;
   }
 
-  async *stream(args: { systemInstruction?: string; messages: any[]; tools?: ToolSet }): AsyncGenerator<StreamPart, void, unknown> {
+  async *stream(args: { systemInstruction?: string; messages: any[]; tools?: ToolSet; abortSignal?: AbortSignal }): AsyncGenerator<StreamPart, void, unknown> {
     const formattedMessages = this.mapMessages(args.messages);
     const formattedTools = this.mapTools(args.tools);
 
@@ -104,6 +104,9 @@ export class AnthropicProvider implements AgentProvider {
     let currentToolArgs = '';
 
     for await (const chunk of stream) {
+      if (args.abortSignal?.aborted) {
+         break;
+      }
       if (chunk.type === 'content_block_start') {
         if (chunk.content_block.type === 'tool_use') {
            currentToolCallId = chunk.content_block.id;

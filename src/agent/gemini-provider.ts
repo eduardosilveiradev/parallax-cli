@@ -162,7 +162,7 @@ export class GeminiProvider implements AgentProvider {
         return cleaned;
     }
 
-    async *stream({ systemInstruction, messages, tools }: { systemInstruction?: string; messages: any[]; tools?: ToolSet }): AsyncGenerator<StreamPart, void, unknown> {
+    async *stream({ systemInstruction, messages, tools, abortSignal }: { systemInstruction?: string; messages: any[]; tools?: ToolSet; abortSignal?: AbortSignal }): AsyncGenerator<StreamPart, void, unknown> {
         const client = await this.ensureInit();
 
         const cleanedMessages = messages.map(m => {
@@ -223,6 +223,9 @@ export class GeminiProvider implements AgentProvider {
         const finalParts: any[] = [];
 
         for await (const chunk of responseStream) {
+            if (abortSignal?.aborted) {
+                break;
+            }
             const candidate = chunk.candidates?.[0];
             if (!candidate || !candidate.content || !candidate.content.parts) continue;
 

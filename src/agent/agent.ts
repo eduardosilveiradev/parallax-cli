@@ -27,8 +27,13 @@ export class ToolLoopAgent {
         this.toolContextBase = settings.toolContextBase;
     }
 
-    async *stream(messages: any[]): AsyncGenerator<StreamPart, void, unknown> {
+    async *stream(messages: any[], abortSignal?: AbortSignal): AsyncGenerator<StreamPart, void, unknown> {
         while (true) {
+            if (abortSignal?.aborted) {
+                yield { type: 'finish-step', reason: 'aborted' };
+                break;
+            }
+
             const currentTools = [];
             
             if (this.contextManager.shouldCompact(messages)) {
@@ -42,7 +47,8 @@ export class ToolLoopAgent {
             const stream = this.provider.stream({
                 systemInstruction: this.systemInstruction,
                 messages,
-                tools: this.tools
+                tools: this.tools,
+                abortSignal
             });
 
             let finishReason = 'stop';

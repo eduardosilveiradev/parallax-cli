@@ -94,7 +94,7 @@ export class GenericProvider implements AgentProvider {
     return out;
   }
 
-  async *stream(args: { systemInstruction?: string; messages: any[]; tools?: ToolSet }): AsyncGenerator<StreamPart, void, unknown> {
+  async *stream(args: { systemInstruction?: string; messages: any[]; tools?: ToolSet; abortSignal?: AbortSignal }): AsyncGenerator<StreamPart, void, unknown> {
     const formattedMessages = this.mapMessages(args.systemInstruction, args.messages);
     const formattedTools = this.mapTools(args.tools);
 
@@ -122,6 +122,10 @@ export class GenericProvider implements AgentProvider {
     let contentBuffer = '';
 
     for await (const chunk of stream) {
+      if (args.abortSignal?.aborted) {
+         break;
+      }
+
       const delta = chunk.choices[0]?.delta;
       if (!delta) continue;
 
