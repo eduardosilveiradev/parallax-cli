@@ -447,8 +447,10 @@ If you decide that a request warrants a plan, then follow this workflow:
         let isAborted = false;
         const abortController = new AbortController();
         req.on('close', () => {
-            isAborted = true;
-            abortController.abort();
+            if (!res.writableEnded) {
+                isAborted = true;
+                abortController.abort();
+            }
         });
 
         let lastSaveTime = Date.now();
