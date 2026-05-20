@@ -2,6 +2,9 @@ import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { VALID_GEMINI_MODELS, AuthType, getAuthTypeFromEnv } from '@google/gemini-cli-core';
 
+// Register gemini-3.5-flash as a valid Gemini model
+VALID_GEMINI_MODELS.add('gemini-3.5-flash');
+
 export interface ModelListing {
     id: string;
     label: string;
