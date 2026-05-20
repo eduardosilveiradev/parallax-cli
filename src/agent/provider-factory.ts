@@ -2,6 +2,7 @@ import { AgentProvider } from './types.js';
 import { GeminiProvider } from './gemini-provider.js';
 import { GenericProvider } from './generic-provider.js';
 import { AnthropicProvider } from './anthropic-provider.js';
+import { AuthType } from '@google/gemini-cli-core';
 
 export class OpenAIProvider extends GenericProvider {
     constructor(model: string) {
@@ -71,9 +72,16 @@ export class ProviderFactory {
             return new VLLMProvider(modelConfigString.substring('vllm:'.length));
         } else if (modelConfigString.startsWith('openrouter:')) {
             return new OpenRouterProvider(modelConfigString.substring('openrouter:'.length));
+        } else if (modelConfigString.startsWith('vertex:')) {
+            const model = modelConfigString.substring('vertex:'.length);
+            return new GeminiProvider(model, AuthType.USE_VERTEX_AI);
+        } else if (modelConfigString.startsWith('gemini:')) {
+            const model = modelConfigString.substring('gemini:'.length);
+            const authType = process.env.GEMINI_API_KEY ? AuthType.USE_GEMINI : AuthType.LOGIN_WITH_GOOGLE;
+            return new GeminiProvider(model, authType);
         } else {
             // Default fallback to Gemini
-            const model = modelConfigString.startsWith('gemini:') ? modelConfigString.split(':')[1] : modelConfigString;
+            const model = modelConfigString;
             return new GeminiProvider(model);
         }
     }

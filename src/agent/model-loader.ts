@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { VALID_GEMINI_MODELS, AuthType, getAuthTypeFromEnv } from '@google/gemini-cli-core';
+import { GoogleAuth } from 'google-auth-library';
 
 // Register gemini-3.5-flash as a valid Gemini model
 VALID_GEMINI_MODELS.add('gemini-3.5-flash');
@@ -27,21 +28,152 @@ async function fetchWithTimeout(url: string, options: any = {}): Promise<Respons
     }
 }
 
+async function getDynamicGeminiModels(): Promise<ModelListing[]> {
+    const staticFallback = Array.from(VALID_GEMINI_MODELS as Set<string>)
+        .filter(m => !m.includes('lite') && !m.includes('customtools'))
+        .map(m => ({ id: `gemini:${m}`, label: m, provider: 'google', group: 'Google Gemini' }));
+
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    if (!apiKey) {
+        return staticFallback;
+    }
+
+    try {
+        const res = await fetchWithTimeout(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+        if (!res.ok) return staticFallback;
+        const json = await res.json();
+        if (!json.models || !Array.isArray(json.models)) return staticFallback;
+
+        const fetched = json.models
+            .filter((m: any) => m.supportedGenerationMethods && m.supportedGenerationMethods.includes('generateContent'))
+            .map((m: any) => {
+                const cleanId = m.name.replace(/^models\//, '');
+                return {
+                    id: `gemini:${cleanId}`,
+                    label: cleanId,
+                    provider: 'google',
+                    group: 'Google Gemini'
+                };
+            })
+            .filter((m: any) => 
+                (m.label.startsWith('gemini') || m.label.startsWith('gemma')) && 
+                !m.label.includes('lite') && 
+                !m.label.includes('customtools') && 
+                !m.label.includes('embedding') && 
+                !m.label.includes('text-')
+            );
+
+        const merged = [...staticFallback];
+        for (const model of fetched) {
+            if (!merged.some(m => m.id === model.id)) {
+                merged.push(model);
+            }
+        }
+        return merged;
+    } catch {
+        return staticFallback;
+    }
+}
+
+async function getDynamicVertexModels(): Promise<ModelListing[]> {
+    const staticFallback = Array.from(VALID_GEMINI_MODELS as Set<string>)
+        .filter(m => !m.includes('lite') && !m.includes('customtools'))
+        .map(m => ({ id: `vertex:${m}`, label: m, provider: 'vertex', group: 'Google Vertex AI' }));
+
+    const hasVertex = process.env.GOOGLE_GENAI_USE_VERTEXAI === 'true' || 
+                      !!process.env.GOOGLE_CLOUD_PROJECT || 
+                      !!process.env.GOOGLE_CLOUD_PROJECT_ID;
+
+    if (!hasVertex) {
+        return [];
+    }
+
+    try {
+        const auth = new GoogleAuth({
+            scopes: 'https://www.googleapis.com/auth/cloud-platform'
+        });
+        
+        const project = process.env.GOOGLE_CLOUD_PROJECT || 
+                        process.env.GOOGLE_CLOUD_PROJECT_ID || 
+                        await auth.getProjectId();
+                        
+        let location = process.env.GOOGLE_CLOUD_LOCATION || 'us-central1';
+        if (location === 'global') {
+            location = 'us-central1';
+        }
+
+        if (!project) {
+            return staticFallback;
+        }
+
+        const client = await auth.getClient();
+        const tokenResponse = await client.getAccessToken();
+        const accessToken = tokenResponse.token;
+
+        if (!accessToken) {
+            return staticFallback;
+        }
+
+        const url = `https://${location}-aiplatform.googleapis.com/v1beta1/publishers/google/models`;
+        const res = await fetchWithTimeout(
+            url,
+            {
+                headers: {
+                    'Authorization': `Bearer ${accessToken}`,
+                    'x-goog-user-project': project
+                }
+            }
+        );
+
+        if (!res.ok) return staticFallback;
+        const json = await res.json();
+        if (!json.publisherModels || !Array.isArray(json.publisherModels)) return staticFallback;
+
+        const fetched = json.publisherModels
+            .map((m: any) => {
+                const parts = m.name.split('/');
+                const cleanId = parts[parts.length - 1];
+                return {
+                    id: `vertex:${cleanId}`,
+                    label: cleanId,
+                    provider: 'vertex',
+                    group: 'Google Vertex AI'
+                };
+            })
+            .filter((m: any) => 
+                (m.label.startsWith('gemini') || m.label.startsWith('gemma')) && 
+                !m.label.includes('lite') && 
+                !m.label.includes('customtools') &&
+                !m.label.includes('embedding')
+            );
+
+        const merged = [...staticFallback];
+        for (const model of fetched) {
+            if (!merged.some(m => m.id === model.id)) {
+                merged.push(model);
+            }
+        }
+        return merged;
+    } catch (e: any) {
+        console.error('[getDynamicVertexModels] Error:', e.message || e);
+        return staticFallback;
+    }
+}
+
 export async function fetchAvailableModels(): Promise<ModelListing[]> {
     const tasks: Promise<ModelListing[]>[] = [];
 
-    const detectedAuth = getAuthTypeFromEnv();
-    const groupName = detectedAuth === AuthType.USE_VERTEX_AI ? 'Google Vertex AI' : 'Google Gemini';
-    const providerName = detectedAuth === AuthType.USE_VERTEX_AI ? 'vertex' : 'google';
+    // 1. Google Gemini (always available, dynamic + static fallback)
+    tasks.push(getDynamicGeminiModels());
 
-    // 1. Google Gemini (Static fallback / CLI integrated)
-    tasks.push(
-        Promise.resolve(
-            Array.from(VALID_GEMINI_MODELS as Set<string>)
-                .filter(m => !m.includes('lite') && !m.includes('customtools'))
-                .map(m => ({ id: `gemini:${m}`, label: m, provider: providerName, group: groupName }))
-        )
-    );
+    // 2. Google Vertex AI (available if configured, dynamic + static fallback)
+    const hasVertex = process.env.GOOGLE_GENAI_USE_VERTEXAI === 'true' || 
+                      !!process.env.GOOGLE_CLOUD_PROJECT || 
+                      !!process.env.GOOGLE_CLOUD_PROJECT_ID;
+
+    if (hasVertex) {
+        tasks.push(getDynamicVertexModels());
+    }
 
     // 2. OpenAI
     if (process.env.OPENAI_API_KEY) {

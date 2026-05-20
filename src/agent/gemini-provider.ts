@@ -14,9 +14,9 @@ export class GeminiProvider implements AgentProvider {
     private model: string;
     private authType: AuthType;
 
-    constructor(model: string = 'gemini-3.1-pro-preview') {
+    constructor(model: string = 'gemini-3.1-pro-preview', forcedAuthType?: AuthType) {
         this.model = model;
-        this.authType = getAuthTypeFromEnv() || AuthType.LOGIN_WITH_GOOGLE;
+        this.authType = forcedAuthType || getAuthTypeFromEnv() || AuthType.LOGIN_WITH_GOOGLE;
     }
 
     setModel(newModel: string) {
