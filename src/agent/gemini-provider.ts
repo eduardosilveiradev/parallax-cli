@@ -76,7 +76,16 @@ export class GeminiProvider implements AgentProvider {
             }
         });
 
+        const originalGoogleApiKey = process.env.GOOGLE_API_KEY;
+        if (this.authType === AuthType.USE_VERTEX_AI) {
+            delete process.env.GOOGLE_API_KEY;
+        }
+
         const config = await createContentGeneratorConfig(configMock, this.authType);
+
+        if (this.authType === AuthType.USE_VERTEX_AI) {
+            process.env.GOOGLE_API_KEY = originalGoogleApiKey;
+        }
 
         // Monkey-patch for 0.36.0
         (config as any).refreshUserQuotaIfStale = async () => { };
