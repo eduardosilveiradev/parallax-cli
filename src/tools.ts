@@ -40,6 +40,7 @@ export interface RunningCommand {
     outputBuffer: string;
     status: 'running' | 'done';
     exitCode: number | null;
+    sessionId?: string;
 }
 export const activeCommands = new Map<string, RunningCommand>();
 
@@ -80,9 +81,31 @@ export const allTools: ToolSet = {
         },
         execute: async (args: any, context?: ToolContext) => {
             if (!context?.toolCallId) return { success: false, error: 'AskQuestion requires toolCallId in ToolContext' };
-            const payload = await waitForToolResponse(context.toolCallId);
-            if (payload?.cancelled) return { success: false, error: 'User cancelled question prompt.' };
-            return { success: true, answers: payload.answers || payload };
+            if (context?.abortSignal?.aborted) return { success: false, error: 'Question prompt aborted.' };
+
+            return new Promise((resolve) => {
+                const onAbort = () => {
+                    resolve({ success: false, error: 'User cancelled question prompt.' });
+                };
+                if (context?.abortSignal) {
+                    context.abortSignal.addEventListener('abort', onAbort);
+                }
+                waitForToolResponse(context!.toolCallId!).then(payload => {
+                    if (context?.abortSignal) {
+                        context.abortSignal.removeEventListener('abort', onAbort);
+                    }
+                    if (payload?.cancelled) {
+                        resolve({ success: false, error: 'User cancelled question prompt.' });
+                    } else {
+                        resolve({ success: true, answers: payload?.answers || payload });
+                    }
+                }).catch(err => {
+                    if (context?.abortSignal) {
+                        context.abortSignal.removeEventListener('abort', onAbort);
+                    }
+                    resolve({ success: false, error: err.message });
+                });
+            });
         }
     },
     CreatePlan: {
@@ -566,6 +589,10 @@ export const allTools: ToolSet = {
         },
         execute: async ({ CommandLine, Cwd, WaitMsBeforeAsync }: any, context?: ToolContext) => {
             try {
+                if (context?.abortSignal?.aborted) {
+                    return { success: false, error: 'Command execution aborted.' };
+                }
+
                 const id = crypto.randomUUID();
                 const effectiveCwd = Cwd ? path.resolve(context?.cwd || process.cwd(), Cwd) : (context?.cwd || process.cwd());
                 const child = spawn(CommandLine, { shell: true, cwd: effectiveCwd });
@@ -575,17 +602,32 @@ export const allTools: ToolSet = {
                     process: child,
                     outputBuffer: '',
                     status: 'running',
-                    exitCode: null
+                    exitCode: null,
+                    sessionId: context?.sessionId
                 };
                 activeCommands.set(id, cmdState);
+
+                const onAbort = () => {
+                    console.log(`[Abort] Killing active process for command: ${CommandLine}`);
+                    child.kill();
+                };
+                if (context?.abortSignal) {
+                    context.abortSignal.addEventListener('abort', onAbort);
+                }
 
                 child.stdout?.on('data', (data) => { cmdState.outputBuffer += data.toString(); });
                 child.stderr?.on('data', (data) => { cmdState.outputBuffer += data.toString(); });
                 child.on('close', (code) => {
+                    if (context?.abortSignal) {
+                        context.abortSignal.removeEventListener('abort', onAbort);
+                    }
                     cmdState.status = 'done';
                     cmdState.exitCode = code;
                 });
                 child.on('error', (err) => {
+                    if (context?.abortSignal) {
+                        context.abortSignal.removeEventListener('abort', onAbort);
+                    }
                     cmdState.status = 'done';
                     cmdState.outputBuffer += `\n[System Error]: ${err.message}`;
                 });
@@ -696,12 +738,13 @@ export const allTools: ToolSet = {
                     provider: subagentProvider,
                     tools: context.tools,
                     systemInstruction: args.systemInstruction || 'You are a subagent helping a main agent with a task. Be concise and precise.',
-                    onConfirm: context.onConfirm
+                    onConfirm: context.onConfirm,
+                    toolContextBase: { sessionId: context.sessionId, cwd: context.cwd, todos: context.todos, abortSignal: context.abortSignal }
                 });
 
                 const messages = [context.provider.createUserMessage(args.prompt)];
                 let fullText = '';
-                const stream = subagent.stream(messages);
+                const stream = subagent.stream(messages, context.abortSignal);
 
                 for await (const part of stream) {
                     if (part.type === 'text-delta') {

@@ -34,6 +34,7 @@ export interface ToolContext {
     sessionId?: string;
     cwd?: string;
     todos?: any[];
+    abortSignal?: AbortSignal;
 }
 
 export interface ToolDefinition {

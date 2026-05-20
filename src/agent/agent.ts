@@ -76,7 +76,8 @@ export class ToolLoopAgent {
                             ...(this.toolContextBase || {}),
                             provider: this.provider,
                             tools: this.tools!,
-                            onConfirm: this.onConfirm
+                            onConfirm: this.onConfirm,
+                            abortSignal
                         };
                         context.toolCallId = tc.id;
 

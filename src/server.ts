@@ -8,7 +8,7 @@ import { execSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { ToolLoopAgent } from './agent/agent.js';
 import { ProviderFactory } from './agent/provider-factory.js';
-import { allTools } from './tools.js';
+import { allTools, activeCommands } from './tools.js';
 import { loadMcpTools } from './mcp.js';
 import { loadWorkspaceSkills } from './skills.js';
 import { getSystemPrompt } from './system-prompt.js';
@@ -50,7 +50,11 @@ export function getHistory(sessionId: string) {
     return { blocks: [], messages: [], todos: [], mode: 'agent', cwd: process.cwd(), threadName: undefined };
 }
 
-export const activeConfirmations = new Map<string, (approved: boolean) => void>();
+export interface ActiveConfirmation {
+    sessionId: string;
+    resolve: (approved: boolean) => void;
+}
+export const activeConfirmations = new Map<string, ActiveConfirmation>();
 const activeThreadNameGenerations = new Set<string>();
 const THREAD_NAME_MAX_LENGTH = 80;
 const THREAD_NAME_TIMEOUT_MS = 30000;
@@ -212,9 +216,9 @@ export const startServer = async (cliSessionId: string, model: string = 'gemini:
 
     app.post('/confirm', (req, res) => {
         const { toolCallId, approve } = req.body;
-        const resolve = activeConfirmations.get(toolCallId);
-        if (resolve) {
-            resolve(!!approve);
+        const conf = activeConfirmations.get(toolCallId);
+        if (conf) {
+            conf.resolve(!!approve);
             activeConfirmations.delete(toolCallId);
             res.json({ success: true });
         } else {
@@ -415,15 +419,17 @@ If you decide that a request warrants a plan, then follow this workflow:
             }
         }
 
+        const abortController = new AbortController();
+
         const agent = new ToolLoopAgent({
             provider,
             tools: combinedTools,
             systemInstruction: sysInstruct,
-            toolContextBase: { sessionId, cwd: effectiveCwd, todos },
+            toolContextBase: { sessionId, cwd: effectiveCwd, todos, abortSignal: abortController.signal },
             onConfirm: async (tc) => {
                 if (yolo) return true;
                 return new Promise<boolean>((resolve) => {
-                    activeConfirmations.set(tc.id, resolve);
+                    activeConfirmations.set(tc.id, { sessionId, resolve });
                 });
             }
         });
@@ -445,11 +451,26 @@ If you decide that a request warrants a plan, then follow this workflow:
         };
 
         let isAborted = false;
-        const abortController = new AbortController();
         req.on('close', () => {
             if (!res.writableEnded) {
                 isAborted = true;
                 abortController.abort();
+
+                // Cancel pending confirmations for this session
+                for (const [tcId, conf] of activeConfirmations.entries()) {
+                    if (conf.sessionId === sessionId) {
+                        conf.resolve(false);
+                        activeConfirmations.delete(tcId);
+                    }
+                }
+
+                // Kill running processes for this session
+                for (const [cmdId, cmd] of activeCommands.entries()) {
+                    if (cmd.sessionId === sessionId && cmd.status === 'running') {
+                        console.log(`[Abort] Killing active process for command ${cmdId} under session ${sessionId}`);
+                        cmd.process.kill();
+                    }
+                }
             }
         });
 
