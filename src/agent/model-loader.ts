@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
-import { VALID_GEMINI_MODELS } from '@google/gemini-cli-core';
+import { VALID_GEMINI_MODELS, AuthType, getAuthTypeFromEnv } from '@google/gemini-cli-core';
 
 export interface ModelListing {
     id: string;
@@ -27,12 +27,16 @@ async function fetchWithTimeout(url: string, options: any = {}): Promise<Respons
 export async function fetchAvailableModels(): Promise<ModelListing[]> {
     const tasks: Promise<ModelListing[]>[] = [];
 
+    const detectedAuth = getAuthTypeFromEnv();
+    const groupName = detectedAuth === AuthType.USE_VERTEX_AI ? 'Google Vertex AI' : 'Google Gemini';
+    const providerName = detectedAuth === AuthType.USE_VERTEX_AI ? 'vertex' : 'google';
+
     // 1. Google Gemini (Static fallback / CLI integrated)
     tasks.push(
         Promise.resolve(
             Array.from(VALID_GEMINI_MODELS as Set<string>)
                 .filter(m => !m.includes('lite') && !m.includes('customtools'))
-                .map(m => ({ id: `gemini:${m}`, label: m, provider: 'google', group: 'Google Gemini' }))
+                .map(m => ({ id: `gemini:${m}`, label: m, provider: providerName, group: groupName }))
         )
     );
 

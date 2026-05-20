@@ -20,6 +20,8 @@
 		"ai-sdk-provider-gemini-cli": "^2.0.1",
 		"cors": "^2.8.6",
 		"diff": "^8.0.4",
+		"dotenv": "^17.4.2",
+		"dotenv-expand": "^13.0.0",
 		"duck-duck-scrape": "^2.2.7",
 		"express": "^5.2.1",
 		"ink": "^6.8.0",

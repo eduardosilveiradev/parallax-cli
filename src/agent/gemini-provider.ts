@@ -1,7 +1,8 @@
 import {
     createContentGenerator,
     createContentGeneratorConfig,
-    AuthType
+    AuthType,
+    getAuthTypeFromEnv
 } from '@google/gemini-cli-core';
 import { randomUUID } from 'node:crypto';
 import type { AgentProvider, StreamPart, ToolSet } from './types.js';
@@ -15,7 +16,7 @@ export class GeminiProvider implements AgentProvider {
 
     constructor(model: string = 'gemini-3.1-pro-preview') {
         this.model = model;
-        this.authType = AuthType.LOGIN_WITH_GOOGLE;
+        this.authType = getAuthTypeFromEnv() || AuthType.LOGIN_WITH_GOOGLE;
     }
 
     setModel(newModel: string) {
@@ -81,6 +82,7 @@ export class GeminiProvider implements AgentProvider {
         (config as any).refreshUserQuotaIfStale = async () => { };
         configMock.refreshUserQuotaIfStale = async () => { };
 
+        console.log(`[GeminiProvider] Creating content generator with model "${this.model}" and authType "${this.authType}"`);
         this.client = await createContentGenerator(config, configMock, sessionId);
         return this.client;
     }

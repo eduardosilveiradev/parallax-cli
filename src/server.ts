@@ -1,8 +1,16 @@
+import * as dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import path from 'path';
 import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
-import path from 'path';
 import os from 'node:os';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load .env from the project root
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
 import crypto from 'node:crypto';
 import { execSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
@@ -607,8 +615,6 @@ If you decide that a request warrants a plan, then follow this workflow:
         }
     });
 };
-
-import { fileURLToPath } from 'url';
 
 const defaultSessionId = crypto.randomBytes(4).toString('hex');
 console.log(`[Startup] Initializing session ${defaultSessionId}...`);
